@@ -1,8 +1,21 @@
 # ai-core
 
-Тонкая shared-библиотека для Phoenix observability: конфигурация из env, обрезка IO в трейсах.
+Тонкая shared-библиотека для Phoenix observability: конфигурация из env, soft-fail tracing, обрезка IO в трейсах.
 
-Проекты `prozakupki-platform`, `Clin-rec`, `zoom-in-plan` могут подключить пакет как git-зависимость на следующих этапах rollout.
+Проекты `prozakupki-platform`, `Clin-rec`, `zoom-in-plan` подключают пакет как git-зависимость.
+
+## Установка (Clin-rec / zoom-in-plan / prozakupki)
+
+```bash
+pip install "ai-core @ git+ssh://git@github.com/kkobanenko/ai-core.git"
+```
+
+Локальная разработка:
+
+```bash
+pip install -e ".[dev]"
+python -m pytest tests/ -v
+```
 
 ## Переменные окружения
 
@@ -14,21 +27,47 @@
 | `PHOENIX_TRACE_INCLUDE_IO` | `true` | Прикреплять обрезанные prompt/response к span |
 | `PHOENIX_TRACE_MAX_IO_CHARS` | `4000` | Лимит символов на одно IO-поле |
 
-## Установка (разработка)
+Пример для **Clin-rec**:
 
 ```bash
-pip install -e ".[dev]"
-python -m pytest tests/ -v
+PHOENIX_ENABLED=true
+PHOENIX_PROJECT_NAME=clin-rec
+PHOENIX_COLLECTOR_ENDPOINT=http://127.0.0.1:6006/v1/traces
+```
+
+Пример для **zoom-in-plan**:
+
+```bash
+PHOENIX_ENABLED=true
+PHOENIX_PROJECT_NAME=zoom-in-plan
+PHOENIX_COLLECTOR_ENDPOINT=http://127.0.0.1:6006/v1/traces
 ```
 
 ## Публичный API (Phase 1)
 
 ```python
-from ai_core import PhoenixConfig, load_phoenix_config, maybe_truncate
+from ai_core import init_tracing, maybe_truncate, shutdown_tracing, start_llm_span
+from ai_core import PhoenixConfig, load_phoenix_config
 
-cfg = load_phoenix_config()
-if cfg.enabled:
-    truncated = maybe_truncate(long_prompt, cfg.max_io_chars)
+init_tracing(project_name="prozakupki-platform")
+
+with start_llm_span(
+    workflow="classify",
+    attributes={"model": "gpt-4o-mini"},
+    system_prompt="...",
+    user_prompt="...",
+) as span:
+    # ... вызов LLM ...
+    if span is not None:
+        span.set_attribute("llm.output", maybe_truncate(response, 4000))
+
+shutdown_tracing()
 ```
 
-Tracing (`init_tracing` / `shutdown_tracing`) — в следующей задаче.
+## Smoke-тест (Phoenix UI)
+
+```bash
+PHOENIX_ENABLED=true PHOENIX_PROJECT_NAME=smoke python examples/smoke_span.py
+```
+
+Span должен появиться в Phoenix UI (через SSH tunnel на `127.0.0.1:6006`).
