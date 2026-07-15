@@ -8,6 +8,7 @@ from typing import Any, Iterator
 
 from ai_core.config import load_phoenix_config
 from ai_core.io_policy import maybe_truncate
+from ai_core.safe_attributes import sanitize_span_attributes
 
 _logger = logging.getLogger(__name__)
 
@@ -15,6 +16,13 @@ _logger = logging.getLogger(__name__)
 _tracer = None
 # Флаг идемпотентности: повторный init_tracing не трогает OTEL.
 _initialized = False
+
+
+def _set_attribute_soft(span: Any, key: str, value: Any) -> None:
+    try:
+        span.set_attribute(key, value)
+    except Exception as error:
+        _logger.warning("phoenix span attribute failed key=%s error=%s", key, error)
 
 
 def init_tracing(project_name: str | None = None) -> Any:
@@ -92,24 +100,26 @@ def start_llm_span(
         return
 
     with _tracer.start_as_current_span(f"llm.{workflow}") as span:
-        for key, value in attrs.items():
-            if value is None:
-                continue
-            span.set_attribute(str(key), value)
+        safe_attrs = sanitize_span_attributes(attrs)
+        for key, value in safe_attrs.items():
+            _set_attribute_soft(span, key, value)
 
         if cfg.trace_include_io:
             if system_prompt:
-                span.set_attribute(
+                _set_attribute_soft(
+                    span,
                     "llm.input.system",
                     maybe_truncate(system_prompt, cfg.max_io_chars),
                 )
             if user_prompt:
-                span.set_attribute(
+                _set_attribute_soft(
+                    span,
                     "llm.input.user",
                     maybe_truncate(user_prompt, cfg.max_io_chars),
                 )
             if response_text:
-                span.set_attribute(
+                _set_attribute_soft(
+                    span,
                     "llm.output",
                     maybe_truncate(response_text, cfg.max_io_chars),
                 )

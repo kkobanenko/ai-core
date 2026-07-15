@@ -50,6 +50,6 @@ def load_phoenix_config() -> PhoenixConfig:
             "http://127.0.0.1:6006/v1/traces",
         ),
         project_name=os.environ.get("PHOENIX_PROJECT_NAME", ""),
-        trace_include_io=_read_bool("PHOENIX_TRACE_INCLUDE_IO", default=True),
+        trace_include_io=_read_bool("PHOENIX_TRACE_INCLUDE_IO", default=False),
         max_io_chars=_read_int("PHOENIX_TRACE_MAX_IO_CHARS", default=4000),
     )
