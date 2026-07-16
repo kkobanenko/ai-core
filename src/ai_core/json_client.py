@@ -43,11 +43,10 @@ class LangChainJsonClient:
         messages = [SystemMessage(system_prompt), HumanMessage(user_prompt)]
 
         def branch(spec: ProviderConfig, index: int):
-            model = build_chat_model(spec)
-
             def invoke(_: object) -> JsonCompletion:
                 started = time.perf_counter()
                 try:
+                    model = build_chat_model(spec)
                     message = model.invoke(messages)
                 except BaseException as error:
                     elapsed = int((time.perf_counter() - started) * 1000)

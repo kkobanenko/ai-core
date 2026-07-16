@@ -66,5 +66,21 @@ def test_malformed_success_does_not_fall_back(monkeypatch):
     result = LangChainJsonClient((cfg("primary"), cfg("fallback"))).create_json_completion("s", "u")
     assert result.raw_content == "not-json"
     assert result.provider_name == "primary"
-    assert build_calls == ["primary", "fallback"]
+    assert build_calls == ["primary"]
+    assert [row["outcome"] for row in result.attempt_summary] == ["success"]
+
+
+def test_primary_success_does_not_build_fallback_provider(monkeypatch):
+    build_calls = []
+
+    def build(spec):
+        build_calls.append(spec.name)
+        if spec.name == "fallback":
+            raise RuntimeError("fallback init should stay lazy")
+        return RunnableLambda(lambda _: AIMessage(content='{"items": []}'))
+
+    monkeypatch.setattr("ai_core.json_client.build_chat_model", build)
+    result = LangChainJsonClient((cfg("primary"), cfg("fallback"))).create_json_completion("s", "u")
+    assert result.provider_name == "primary"
+    assert build_calls == ["primary"]
     assert [row["outcome"] for row in result.attempt_summary] == ["success"]
