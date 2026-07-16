@@ -1,0 +1,15 @@
+---
+alwaysApply: true
+---
+
+# Platform coordination
+
+- Read the repository-local `AGENTS.md`.
+- Check `/home/kok4444/projects/platform-control/coordination/current-initiative.yaml`.
+- Do not change shared contracts without an ADR in platform-control.
+- Do not perform shared deployment without a deployment lock.
+- Do not touch repositories outside the allowlist.
+- Only one writer may change ai-core at a time.
+- Only one operator may change VM100/Phoenix at a time.
+- Preserve product autonomy for repository-local changes.
+- Finish with a handoff containing branch, base SHA, head SHA, tests, risks, and rollback.
