@@ -2,12 +2,19 @@
 
 Тонкая shared-библиотека для Phoenix observability: конфигурация из env, soft-fail tracing, обрезка IO в трейсах.
 
-Проекты `prozakupki-platform`, `Clin-rec`, `zoom-in-plan` подключают пакет как git-зависимость.
+Проекты `prozakupki-platform`, `zoom-in-plan` и будущий `clin-rec` подключают пакет как git-зависимость.
 
-## Установка (Clin-rec / zoom-in-plan / prozakupki)
+Пакет не содержит credentials или business code.
 
-```bash
-pip install "ai-core @ git+ssh://git@github.com/kkobanenko/ai-core.git"
+## Установка (prozakupki-platform / zoom-in-plan / clin-rec)
+
+```text
+pip install "ai-core @ git+https://github.com/kkobanenko/ai-core.git@v0.1.0"
+
+Production default:
+PHOENIX_ENABLED=false
+PHOENIX_TRACE_INCLUDE_IO=false
+PHOENIX_TRACE_MAX_IO_CHARS=4000
 ```
 
 Локальная разработка:
