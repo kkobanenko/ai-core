@@ -1,0 +1,5 @@
+capabilities:
+  - shared_tracing
+  - io_policy
+workers_allowed: [workstation, vm100]
+gpu_required: false

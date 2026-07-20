@@ -1,0 +1,5 @@
+policies:
+  secrets_in_git: forbidden
+  production_write: forbidden_without_lock_and_auth
+  agents_md_overwrite: forbidden
+  default_execution_mode: LEGACY_MANUAL

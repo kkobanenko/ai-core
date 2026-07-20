@@ -1,0 +1,9 @@
+commands:
+  test: python -m pytest -q
+  lint: null
+  typecheck: null
+  smoke: python -m pytest -q
+  compose_validate: null
+  install_dev: pip install -e ".[dev]"
+notes:
+  workstation_python: "host python3.9 cannot install arize-phoenix-otel==0.16.1 (needs >=3.10); run tests on Python >=3.10 (VM100 has 3.12)"

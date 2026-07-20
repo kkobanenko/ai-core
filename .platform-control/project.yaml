@@ -1,0 +1,13 @@
+project:
+  id: ai-core
+  repository: kkobanenko/ai-core
+  default_branch: main
+
+execution:
+  default_mode: LEGACY_MANUAL
+  autonomous_allowed: false
+
+risk:
+  merge_main: human_approval
+  production_deploy: human_approval
+  production_db_write: forbidden
