@@ -1,5 +1,10 @@
 # Gate 2 validation — ai-core `v0.1.0` / `v0.2.0`
 
+> **Follow-up (2026-07-25):** revalidation + consumer/RFC gap mapping on branch
+> `chore/validate-ai-core-v0.1-v0.2` — see
+> `docs/handoffs/2026-07-25-ai-core-v010-v020-revalidation.md` and
+> `docs/COMPATIBILITY_MATRIX_V01_V02.md`. Original Gate 2 evidence below is retained.
+
 **Date (UTC):** 2026-07-16T17:32:26Z  
 **Repository:** `/home/kok4444/projects/ai-core`  
 **Control plane:** `/home/kok4444/projects/platform-control`  
