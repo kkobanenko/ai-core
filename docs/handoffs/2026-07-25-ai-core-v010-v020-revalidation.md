@@ -121,7 +121,8 @@ Canonical control-plane matrix: `platform-control/config/compatibility.yaml` (re
 |---|---|
 | Tag defects requiring release rewrite | **None applied** (tags immutable) |
 | Source bugfix on tagged lines | **None** — would require new patch release / reconciliation PR |
-| Validation docs + v0.1 public-contract tests on branch | **Yes** (this commit) |
+| Validation docs + v0.1 public-contract tests on branch | **Yes** (validation commits; see handoff SHAs) |
+| P2 Phoenix disabled-path isolation | **Yes** — `PHOENIX_ENABLED=false` + tracing cache reset + order-independence regression (`functional_validation_sha`) |
 
 Notable non-blocking doc drift on tagged `v0.2.0` README: still shows SSH install example while ADR-003 / Prozakupki main use HTTPS. Fix belongs in a future release docs commit, not tag rewrite.
 
@@ -133,12 +134,18 @@ Runnable `v0.1.0` / `v0.2.0` artifacts remain valid for transitional dual-pin co
 
 ## Handoff
 
+SHA honesty: avoid a self-referential “head SHA = this docs commit” loop. Functional pytest ran on `functional_validation_sha`. This metadata closeout only documents that SHA; it was **not** re-run as a functional suite — only docs/diff review for the closeout commit itself. Identify `documentation_closeout_sha` as the tip commit that contains this table (`git rev-parse HEAD` / PR tip after push), not as a functionally revalidated head.
+
 | Field | Value |
 |---|---|
 | Branch | `chore/validate-ai-core-v0.1-v0.2` |
 | Base SHA | `83acc5304bd87451a0dc96d7a3b0ca663ec6769f` |
-| Tests | `v0.1.0@3.10` 15 passed; `v0.2.0@3.10` 20 passed; HTTPS installs; API smokes; branch contract tests |
-| Risks | 3.12 local still unrun; release-line divergence; Zoom cannot upgrade to `v0.2.0`; attribute key divergence |
+| Head SHA (`functional_validation_sha`) | `2bc3ec00fa35a9ce650c25d25e8f978b7335b1b4` |
+| `documentation_closeout_sha` | PR tip after this metadata commit (docs-only; points at functional SHA above) |
+| Tests @ `functional_validation_sha` | branch `pytest tests/` **24 passed** (3.10); isolated `test_disabled_tracing_soft_fail` alone + under `PHOENIX_ENABLED=true`; order-independence regression; prior tag cells `v0.1.0@3.10` 15 / `v0.2.0@3.10` 20 + HTTPS installs remain valid |
+| Closeout verification | docs/diff only (no claim that metadata commit was functionally retested) |
+| Risks | 3.12 local still unrun; release-line divergence (`v0.2.0` not on `main`); Zoom cannot upgrade to `v0.2.0`; attribute key divergence |
 | Rollback | Drop branch / PR; consumers keep existing immutable pins |
+| Honesty | `v0_1` valid; `v0_2` valid_transitional_line; `zoom_v0_2_upgrade` forbidden; `clin_rec_v0_2_install` forbidden |
 | `v0_3_implementation_started` | `false` |
 | `release_created` | `false` |
