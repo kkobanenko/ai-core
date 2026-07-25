@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import ai_core
+import ai_core.tracing as tracing_mod
 from ai_core import (
     AttributeValue,
     PhoenixConfig,
@@ -19,6 +22,19 @@ from ai_core import (
     start_llm_span,
 )
 from ai_core.attributes import ALLOWED_ATTRIBUTE_KEYS
+
+
+def _isolate_disabled_phoenix(monkeypatch) -> None:
+    """Явно выключить Phoenix и сбросить module-level кэш tracing.
+
+    Без этого тест зависит от порядка: если раньше init_tracing уже выставил
+    _initialized/_tracer при другом PHOENIX_ENABLED, soft-fail assertion врёт.
+    monkeypatch восстанавливает env и атрибуты модуля после теста.
+    """
+    monkeypatch.setenv("PHOENIX_ENABLED", "false")
+    monkeypatch.setattr(tracing_mod, "_initialized", False)
+    monkeypatch.setattr(tracing_mod, "_tracer", None)
+    monkeypatch.setattr(tracing_mod, "_provider", None)
 
 
 def test_public_all_matches_v01_surface() -> None:
@@ -90,8 +106,36 @@ def test_phoenix_defaults_deterministic(monkeypatch) -> None:
     assert cfg.project_name == ""
 
 
-def test_disabled_tracing_soft_fail() -> None:
-    """При выключенном Phoenix span-API не падает."""
+def test_disabled_tracing_soft_fail(monkeypatch) -> None:
+    """При выключенном Phoenix span-API не падает.
+
+    Precondition задаётся явно: PHOENIX_ENABLED=false + чистый tracing cache.
+    """
+    _isolate_disabled_phoenix(monkeypatch)
+    assert init_tracing() is None
+    with start_llm_span(workflow="validation", attributes={"provider_id": "x"}) as span:
+        assert span is None
+        record_llm_result(span, status="ok", latency_ms=1, response_text="n/a")
+    shutdown_tracing()
+
+
+def test_disabled_tracing_order_independent(monkeypatch) -> None:
+    """Disabled-path стабилен после parent env PHOENIX_ENABLED=true и грязного кэша.
+
+    Регрессия: полный suite раньше маскировал флейк, потому что соседний тест
+    инициализировал cache при disabled. Здесь сначала загрязняем состояние
+    (enabled + stale tracer), затем изолируем disabled-path заново.
+    """
+    # 1) Имитация «родительского» окружения и уже прогретого кэша.
+    monkeypatch.setenv("PHOENIX_ENABLED", "true")
+    monkeypatch.setattr(tracing_mod, "_initialized", True)
+    monkeypatch.setattr(tracing_mod, "_tracer", MagicMock(name="stale_tracer"))
+    monkeypatch.setattr(tracing_mod, "_provider", MagicMock(name="stale_provider"))
+    # Без изоляции init_tracing вернул бы stale_tracer — это и есть баг порядка.
+    assert init_tracing() is not None
+
+    # 2) Правильная изоляция disabled-path: env=false + сброс кэша.
+    _isolate_disabled_phoenix(monkeypatch)
     assert init_tracing() is None
     with start_llm_span(workflow="validation", attributes={"provider_id": "x"}) as span:
         assert span is None
