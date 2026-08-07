@@ -1,8 +1,8 @@
 # A620–A640 — Implementation evidence (provider catalog / privacy / routing)
 
-Дата: 2026-08-07  
-Пакет: `ai-core` **0.2.1 candidate** (git tag **не** создавался; `v0.2.0` не изменялся).  
-Ветка: `feat/provider-catalog-privacy-routing`  
+Дата: 2026-08-07
+Пакет: `ai-core` **0.2.1 candidate** (git tag **не** создавался; `v0.2.0` не изменялся).
+Ветка: `feat/provider-catalog-privacy-routing`
 Base: immutable `v0.2.0` SHA `e479d0af314714a96c959a2ea677abdcb0942af7`
 
 ## Scope delivered
