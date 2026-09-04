@@ -85,10 +85,11 @@ class ProviderProfile:
     priority_hint: int
     endpoint_env_keys: tuple[str, ...]
     credential_env_keys: tuple[str, ...]
-    # Явная политика: True = ключ опционален (локальные Ollama). Без name-heuristics.
-    api_key_optional: bool
     default_model_env: str
     historical_names: tuple[str, ...]
+    # Additive v0.2.2 field (default False): v0.2.1 constructor signature remains valid.
+    # Явная политика: True = ключ опционален (локальные Ollama). Без name-heuristics.
+    api_key_optional: bool = False
 
 
 def _build_catalog() -> dict[str, ProviderProfile]:
@@ -110,9 +111,9 @@ def _build_catalog() -> dict[str, ProviderProfile]:
             priority_hint=10,
             endpoint_env_keys=("OLLAMA_HOST", "OLLAMA_BASE_URL"),
             credential_env_keys=(),
-            api_key_optional=True,
             default_model_env="OLLAMA_MODEL",
             historical_names=("ollama_local", "ollama sidecar", "127.0.0.1:11434"),
+            api_key_optional=True,
         ),
         PROVIDER_OLLAMA_CLOUD: ProviderProfile(
             provider_id=PROVIDER_OLLAMA_CLOUD,
@@ -131,9 +132,9 @@ def _build_catalog() -> dict[str, ProviderProfile]:
             endpoint_env_keys=("OLLAMA_HOST", "OLLAMA_BASE_URL"),
             # AI_PROVIDER — селектор провайдера, не credential.
             credential_env_keys=("OLLAMA_API_KEY",),
-            api_key_optional=False,
             default_model_env="OLLAMA_MODEL",
             historical_names=("ollama_cloud",),
+            api_key_optional=False,
         ),
         PROVIDER_GPU_OLLAMA: ProviderProfile(
             provider_id=PROVIDER_GPU_OLLAMA,
@@ -155,13 +156,13 @@ def _build_catalog() -> dict[str, ProviderProfile]:
                 "LOCAL_GPU_OLLAMA_URL",
             ),
             credential_env_keys=("LOCAL_GPU_OLLAMA_API_KEY",),
-            api_key_optional=True,
             default_model_env="LOCAL_GPU_OLLAMA_MODEL",
             historical_names=(
                 "local_gpu_ollama",
                 "gpu-ollama",
                 "100.91.166.5:11434",
             ),
+            api_key_optional=True,
         ),
         PROVIDER_MISTRAL_EXTERNAL: ProviderProfile(
             provider_id=PROVIDER_MISTRAL_EXTERNAL,
@@ -178,9 +179,9 @@ def _build_catalog() -> dict[str, ProviderProfile]:
             priority_hint=40,
             endpoint_env_keys=("MISTRAL_API_BASE", "MISTRAL_ENDPOINT"),
             credential_env_keys=("MISTRAL_API_KEY",),
-            api_key_optional=False,
             default_model_env="MISTRAL_MODEL",
             historical_names=("mistral",),
+            api_key_optional=False,
         ),
     }
 

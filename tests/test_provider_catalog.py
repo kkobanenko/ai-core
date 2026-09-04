@@ -2,8 +2,13 @@
 
 from ai_core.provider_catalog import (
     CANONICAL_PROVIDER_IDS,
+    BackendKind,
+    CostClass,
+    HealthProbeKind,
+    LatencyClass,
     NetworkBoundary,
     PiiPolicy,
+    ProviderProfile,
     get_provider_catalog,
     get_provider_profile,
 )
@@ -54,3 +59,34 @@ def test_catalog_has_no_secret_values_in_profiles():
         blob = " ".join(profile.credential_env_keys + profile.endpoint_env_keys)
         assert "sk-" not in blob
         assert "Bearer" not in blob
+
+
+def test_provider_profile_v021_constructor_compatible_without_api_key_optional():
+    """v0.2.1 public constructor fields must still construct; default api_key_optional=False."""
+    profile = ProviderProfile(
+        provider_id="test",
+        backend_kind=BackendKind.OLLAMA,
+        network_boundary=NetworkBoundary.LOCAL_SAME_HOST,
+        raw_pii_policy=PiiPolicy.ALLOW,
+        sanitized_pii_policy=PiiPolicy.ALLOW,
+        supports_structured_json=True,
+        supports_text=True,
+        supports_multimodal=False,
+        health_probe_kind=HealthProbeKind.NONE,
+        cost_class=CostClass.UNKNOWN,
+        latency_class=LatencyClass.UNKNOWN,
+        priority_hint=100,
+        endpoint_env_keys=(),
+        credential_env_keys=(),
+        default_model_env="TEST_MODEL",
+        historical_names=(),
+    )
+    assert profile.api_key_optional is False
+
+
+def test_builtin_api_key_optional_explicit_values():
+    assert get_provider_profile("vm100_local_ollama").api_key_optional is True
+    assert get_provider_profile("gpu_ollama").api_key_optional is True
+    assert get_provider_profile("ollama_cloud").api_key_optional is False
+    assert get_provider_profile("mistral_external").api_key_optional is False
+    assert "AI_PROVIDER" not in get_provider_profile("ollama_cloud").credential_env_keys
