@@ -1,8 +1,8 @@
 # AIC-AU01B — Multimodal / OCR single-provider primitives
 
-**STATUS:** implementation spike (draft PR only)  
-**BASE:** immutable `v0.2.1` (`f743057a02a8b69bf943b615510d4745d737e16a`)  
-**BRANCH:** `spike/au01b-multimodal-ocr-primitives`  
+**STATUS:** implementation spike (draft PR only)
+**BASE:** immutable `v0.2.1` (`f743057a02a8b69bf943b615510d4745d737e16a`)
+**BRANCH:** `spike/au01b-multimodal-ocr-primitives`
 **NO RELEASE / NO TAG / NO MAIN MERGE / NO CONSUMER CHANGES**
 
 ## Purpose
@@ -43,13 +43,13 @@ Proven profiles only:
 | `gpu_ollama` | `qwen3.5:9b` | `TEXT`, `STRUCTURED_JSON` (not vision) |
 | `mistral_external` | `ministral-8b-2512` | `TEXT`, `STRUCTURED_JSON` (not OCR) |
 
-Unknown models are **not** assumed multimodal.  
+Unknown models are **not** assumed multimodal.
 `ProviderProfile.supports_multimodal` remains `False` (API preserved; capability is model-specific).
 
 ## Credential ownership
 
-Catalog stores **env names only** (`MISTRAL_API_KEY`, `LOCAL_GPU_OLLAMA_API_KEY`, …).  
-`resolve_provider_endpoint` reads values from `os.environ`.  
+Catalog stores **env names only** (`MISTRAL_API_KEY`, `LOCAL_GPU_OLLAMA_API_KEY`, …).
+`resolve_provider_endpoint` reads values from `os.environ`.
 Secrets must not appear in `repr()`, exceptions, logs, trace attributes, or `MediaResult.metadata`.
 
 ## Public types / functions (additive)
@@ -64,8 +64,8 @@ Secrets must not appear in `repr()`, exceptions, logs, trace attributes, or `Med
 
 ## Tracing
 
-Phoenix surface reused via shared `sanitize_span_attributes` / `set_safe_span_attributes`.  
-Namespaced safe keys only: `llm.provider`, `llm.model`, `llm.status`, `llm.latency_ms`, `llm.input_tokens`, `llm.output_tokens`, `ai.capability`, `media.page_count`, `media.image_count`, `media.page_count_requested`.  
+Phoenix surface reused via shared `sanitize_span_attributes` / `set_safe_span_attributes`.
+Namespaced safe keys only: `llm.provider`, `llm.model`, `llm.status`, `llm.latency_ms`, `llm.input_tokens`, `llm.output_tokens`, `ai.capability`, `media.page_count`, `media.image_count`, `media.page_count_requested`.
 Default `PHOENIX_TRACE_INCLUDE_IO=false` — no raw image/PDF bytes or full OCR text in spans. No direct `span.set_attribute` bypass from media code.
 
 ## Senior-review repairs (AIC-AU01B1)
