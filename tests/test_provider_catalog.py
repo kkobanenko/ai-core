@@ -82,6 +82,8 @@ def test_provider_profile_v021_constructor_compatible_without_api_key_optional()
         historical_names=(),
     )
     assert profile.api_key_optional is False
+    assert profile.endpoint_default_scheme == ""
+    assert profile.endpoint_default_port is None
 
 
 def test_builtin_api_key_optional_explicit_values():

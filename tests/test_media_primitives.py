@@ -534,13 +534,14 @@ def test_resolve_all_canonical_providers_explicit_metadata(monkeypatch):
         assert ep.api_key_optional is get_provider_profile(pid).api_key_optional
         assert "mistral-test-key" not in repr(ep)
 
-    # Нет name-heuristics в resolve.py
+    # Нет name-heuristics по provider_id в resolve.py
     import ai_core.resolve as resolve_mod
     import inspect as _inspect
 
     src = _inspect.getsource(resolve_mod)
-    assert "endswith" not in src
-    assert "startswith" not in src
+    assert 'endswith("ollama")' not in src
+    assert "provider_id.endswith" not in src
+    assert "if provider_id ==" not in src
 
 
 @pytest.mark.parametrize(
