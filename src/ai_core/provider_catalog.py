@@ -87,6 +87,12 @@ class ProviderProfile:
     credential_env_keys: tuple[str, ...]
     default_model_env: str
     historical_names: tuple[str, ...]
+    # Additive v0.2.2 field (default False): v0.2.1 constructor signature remains valid.
+    # Явная политика: True = ключ опционален (локальные Ollama). Без name-heuristics.
+    api_key_optional: bool = False
+    # Additive: нормализация bare host → scheme://host[:port] (без provider-id heuristics).
+    endpoint_default_scheme: str = ""
+    endpoint_default_port: int | None = None
 
 
 def _build_catalog() -> dict[str, ProviderProfile]:
@@ -110,6 +116,9 @@ def _build_catalog() -> dict[str, ProviderProfile]:
             credential_env_keys=(),
             default_model_env="OLLAMA_MODEL",
             historical_names=("ollama_local", "ollama sidecar", "127.0.0.1:11434"),
+            api_key_optional=True,
+            endpoint_default_scheme="http",
+            endpoint_default_port=11434,
         ),
         PROVIDER_OLLAMA_CLOUD: ProviderProfile(
             provider_id=PROVIDER_OLLAMA_CLOUD,
@@ -126,9 +135,13 @@ def _build_catalog() -> dict[str, ProviderProfile]:
             latency_class=LatencyClass.MEDIUM,
             priority_hint=30,
             endpoint_env_keys=("OLLAMA_HOST", "OLLAMA_BASE_URL"),
-            credential_env_keys=("OLLAMA_API_KEY", "AI_PROVIDER"),
+            # AI_PROVIDER — селектор провайдера, не credential.
+            credential_env_keys=("OLLAMA_API_KEY",),
             default_model_env="OLLAMA_MODEL",
             historical_names=("ollama_cloud",),
+            api_key_optional=False,
+            endpoint_default_scheme="https",
+            endpoint_default_port=None,
         ),
         PROVIDER_GPU_OLLAMA: ProviderProfile(
             provider_id=PROVIDER_GPU_OLLAMA,
@@ -156,6 +169,9 @@ def _build_catalog() -> dict[str, ProviderProfile]:
                 "gpu-ollama",
                 "100.91.166.5:11434",
             ),
+            api_key_optional=True,
+            endpoint_default_scheme="http",
+            endpoint_default_port=11434,
         ),
         PROVIDER_MISTRAL_EXTERNAL: ProviderProfile(
             provider_id=PROVIDER_MISTRAL_EXTERNAL,
@@ -174,6 +190,9 @@ def _build_catalog() -> dict[str, ProviderProfile]:
             credential_env_keys=("MISTRAL_API_KEY",),
             default_model_env="MISTRAL_MODEL",
             historical_names=("mistral",),
+            api_key_optional=False,
+            endpoint_default_scheme="https",
+            endpoint_default_port=None,
         ),
     }
 

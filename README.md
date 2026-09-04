@@ -7,7 +7,7 @@ Projects like `prozakupki-platform`, `Clin-rec`, `zoom-in-plan` consume it as pi
 ## Install
 
 ```bash
-pip install "ai-core @ git+ssh://git@github.com/kkobanenko/ai-core.git@v0.2.0"
+pip install "ai-core @ git+ssh://git@github.com/kkobanenko/ai-core.git@v0.2.2"
 ```
 
 Local development:
@@ -77,6 +77,31 @@ Phoenix tracing is env-driven and soft-fail:
 - prompt/response bodies attach only when IO flag enabled
 - all IO fields truncated by `PHOENIX_TRACE_MAX_IO_CHARS`
 - only allowlisted scalar metadata survives `sanitize_span_attributes()`
+
+### Multimodal / OCR primitives (v0.2.2)
+
+Model capabilities are **model-specific** via `ProviderCapability`:
+
+- `TEXT`
+- `STRUCTURED_JSON`
+- `VISION_IMAGE`
+- `OCR_PDF`
+
+Unknown models are not assumed multimodal. Existing text models do not automatically inherit vision/OCR.
+
+Single-provider primitives (consumer owns any fallback chain):
+
+- `invoke_vision(...)` — at most one upstream Ollama vision call
+- `invoke_pdf_ocr(...)` — at most one upstream Mistral PDF OCR call
+
+Every media call requires explicit keyword-only:
+
+- `data_class`
+- `outbound_form`
+
+Base64 encoding is transport encoding only — it is **not** sanitization. Unchanged image/PDF bytes must be declared `OutboundForm.RAW`.
+
+Tracing defaults keep raw media and OCR text out of spans (`PHOENIX_TRACE_INCLUDE_IO=false`). Credentials remain environment-owned: the catalog stores env **names** only, never secret values. Credential selection happens before a provider invocation; one media primitive performs at most one provider call.
 
 ## Environment variables
 
