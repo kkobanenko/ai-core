@@ -1,9 +1,9 @@
 # AIC-AU01B — Multimodal / OCR single-provider primitives
 
-**STATUS:** implementation spike (draft PR only)
+**STATUS:** released as ai-core `v0.2.2` on the immutable v0.2.x provider line
 **BASE:** immutable `v0.2.1` (`f743057a02a8b69bf943b615510d4745d737e16a`)
 **BRANCH:** `spike/au01b-multimodal-ocr-primitives`
-**NO RELEASE / NO TAG / NO MAIN MERGE / NO CONSUMER CHANGES**
+**NO MAIN MERGE / NO CONSUMER CHANGES IN THIS RELEASE**
 
 ## Purpose
 
@@ -52,6 +52,8 @@ Catalog stores **env names only** (`MISTRAL_API_KEY`, `LOCAL_GPU_OLLAMA_API_KEY`
 `resolve_provider_endpoint` reads values from `os.environ`.
 Secrets must not appear in `repr()`, exceptions, logs, trace attributes, or `MediaResult.metadata`.
 
+Credential selection occurs **before** a provider invocation; one ai-core media primitive performs at most one provider call. There is no nested auth retry inside media transport.
+
 ## Public types / functions (additive)
 
 - Types: `VisionImageRequest`, `OcrPdfRequest`, `MediaResult`, `MediaTransportError`, `MediaAuthError`, `MediaPrivacyError`, `ResolvedProviderEndpoint`
@@ -68,33 +70,53 @@ Phoenix surface reused via shared `sanitize_span_attributes` / `set_safe_span_at
 Namespaced safe keys only: `llm.provider`, `llm.model`, `llm.status`, `llm.latency_ms`, `llm.input_tokens`, `llm.output_tokens`, `ai.capability`, `media.page_count`, `media.image_count`, `media.page_count_requested`.
 Default `PHOENIX_TRACE_INCLUDE_IO=false` — no raw image/PDF bytes or full OCR text in spans. No direct `span.set_attribute` bypass from media code.
 
-## Senior-review repairs (AIC-AU01B1)
+## Senior-review repairs (AIC-AU01B1 / AU01B2 / AU02A)
 
-Architecture accepted; mandatory fixes applied before any release review:
+Architecture accepted; mandatory fixes applied before release:
 
 1. **MediaResult repr is content-free** — metadata only (`chars`, counts); no text/preview/OCR excerpt.
-2. **Privacy classification is mandatory** — `data_class` and `outbound_form` are required keyword-only args on `invoke_vision` / `invoke_pdf_ocr` (no `PUBLIC_NO_PII` / `SANITIZED` defaults).
-3. **Base64 ≠ sanitization** — encoding for wire transport does not change outbound form. Unchanged image/PDF bytes must be declared `OutboundForm.RAW` by the caller. `SANITIZED` only after the consumer actually produced a sanitized representation.
-4. **Trace attributes use shared allowlist** — namespaced keys only; `set_safe_span_attributes` wraps `sanitize_span_attributes`.
-5. **Credential optionality is explicit** — `ProviderProfile.api_key_optional` on catalog entries; resolver has no `endswith("ollama")` heuristics. `AI_PROVIDER` is not a credential env key.
-6. **Vision input is bytes-only** — paths/URLs/base64 strings rejected with `TypeError` before any network call.
+2. **Privacy classification is mandatory** — `data_class` and `outbound_form` are required keyword-only args on `invoke_vision` / `invoke_pdf_ocr`.
+3. **Base64 ≠ sanitization** — encoding for wire transport does not change outbound form.
+4. **Trace attributes use shared allowlist** — namespaced keys only.
+5. **Credential optionality is explicit** — `ProviderProfile.api_key_optional` (additive default `False`).
+6. **Vision input is bytes-only**.
+7. **Bare-host endpoint normalization** via `endpoint_default_scheme` / `endpoint_default_port` (additive defaults).
 
-Alpha copyright/rights remain outside ai-core: Alpha decides whether source bytes may leave the product boundary, then passes explicit `data_class` / `outbound_form`.
+## Final live validation (AIC-AU02…AU02D)
 
-## Consumer integration (future — not in this WP)
+### Mistral OCR
 
-- **Alpha:** call `invoke_vision` / `invoke_pdf_ocr` in a consumer-owned loop; keep quality policy and copyright egress outside ai-core.
-- **Prozakupki:** may later replace local transport helpers with these primitives; do **not** move `chain_runner` into ai-core.
-- **No consumer pin/migration in this spike.**
+- `LIVE_VALIDATED=yes`
+- `MODEL=mistral-ocr-latest`
+- `DEFAULT_CLIENT=yes`
+- `SYNTHETIC_ONLY=yes`
 
-## Verification
+Synthetic one-page PDF successfully processed through `ai_core.invoke_pdf_ocr` using the default internal HTTP client.
 
-- CI: mocked HTTP only (`LIVE_PROVIDER_CALLS=0`).
-- Existing v0.2.1 tests must pass; changes are additive.
-- Secret scan of diff: no `.env`, no API key values.
+### Ollama vision
+
+- `ENDPOINT_NORMALIZATION_LIVE_VALIDATED=yes`
+- `PROVIDER_REACHED=yes`
+- `GPU_RUNTIME_HTTP_STATUS=503`
+- `MODEL_INFERENCE_LIVE_VALIDATED=no`
+- `BLOCKER_CLASS=PROVIDER_RUNTIME_NOT_AI_CORE`
+
+Ollama endpoint normalization/reachability validated; the available GPU runtime returned HTTP 503 during release validation, so live vision inference was not validated.
+
+### Network / proxy
+
+- `NO_PROXY_API_CHANGE_REQUIRED=yes`
+
+Both default and explicit-proxy `/v1/models` connectivity paths succeeded in the validation environment. No proxy API was added to ai-core for this release.
+
+## Consumer integration (future)
+
+- **Alpha / Prozakupki:** own provider chains, prompts, rights, and credential selection before calling primitives.
+- **No consumer pin/migration in this release.**
 
 ## Explicit non-goals
 
-- No release, tag, or merge to `main`.
+- No merge to `main`.
 - No nested fallback API.
-- No live provider smoke in this WP.
+- No PyPI publish.
+- No consumer deployments in this WP.
