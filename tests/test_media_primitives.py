@@ -1,7 +1,8 @@
-"""AU01B: capability + single-provider vision/OCR (mocked HTTP, no live calls)."""
+"""AU01B / AU01B1: capability + single-provider vision/OCR (mocked HTTP)."""
 
 from __future__ import annotations
 
+import inspect
 import json
 from typing import Any
 
@@ -19,8 +20,16 @@ from ai_core.media_errors import MediaAuthError, MediaTransportError
 from ai_core.media_gate import MediaPrivacyError, assert_media_allowed
 from ai_core.ocr_pdf import build_mistral_ocr_payload, invoke_pdf_ocr
 from ai_core.privacy import DataClass, OutboundForm
-from ai_core.provider_catalog import PROVIDER_GPU_OLLAMA, PROVIDER_MISTRAL_EXTERNAL
+from ai_core.provider_catalog import (
+    CANONICAL_PROVIDER_IDS,
+    PROVIDER_GPU_OLLAMA,
+    PROVIDER_MISTRAL_EXTERNAL,
+    PROVIDER_OLLAMA_CLOUD,
+    PROVIDER_VM100_LOCAL_OLLAMA,
+    get_provider_profile,
+)
 from ai_core.resolve import resolve_provider_endpoint
+from ai_core.safe_attributes import SAFE_ATTRIBUTE_KEYS, sanitize_span_attributes, set_safe_span_attributes
 from ai_core.vision import build_ollama_vision_payload, invoke_vision
 
 
@@ -165,7 +174,7 @@ def test_mistral_ocr_payload_and_one_call(monkeypatch):
     result = invoke_pdf_ocr(
         OcrPdfRequest(model="mistral-ocr-latest", pdf_bytes=pdf, max_pages=3),
         data_class=DataClass.PUBLIC_NO_PII,
-        outbound_form=OutboundForm.SANITIZED,
+        outbound_form=OutboundForm.RAW,
         client=client,
     )
     assert client.posts == 1
@@ -192,11 +201,11 @@ def test_vision_timeout_and_connection_normalized(monkeypatch, exc, category):
         invoke_vision(
             VisionImageRequest(model="qwen2.5vl:7b", images=(b"x",), prompt="p"),
             data_class=DataClass.SYNTHETIC,
+            outbound_form=OutboundForm.RAW,
             client=client,
         )
     assert info.value.category == category
     assert client.posts == 1
-    # fallback-eligible marker
     assert isinstance(info.value, MediaTransportError)
 
 
@@ -209,6 +218,7 @@ def test_vision_429_and_5xx(monkeypatch):
             invoke_vision(
                 VisionImageRequest(model="qwen2.5vl:7b", images=(b"x",), prompt="p"),
                 data_class=DataClass.SYNTHETIC,
+                outbound_form=OutboundForm.RAW,
                 client=client,
             )
         assert info.value.category == cat
@@ -223,6 +233,7 @@ def test_vision_401_terminal(monkeypatch):
         invoke_vision(
             VisionImageRequest(model="qwen2.5vl:7b", images=(b"x",), prompt="p"),
             data_class=DataClass.SYNTHETIC,
+            outbound_form=OutboundForm.RAW,
             client=client,
         )
     assert info.value.status_code == 401
@@ -241,7 +252,7 @@ def test_secret_absent_from_exception_and_repr(monkeypatch):
         invoke_pdf_ocr(
             OcrPdfRequest(model="mistral-ocr-latest", pdf_bytes=b"%PDF"),
             data_class=DataClass.PUBLIC_NO_PII,
-            outbound_form=OutboundForm.SANITIZED,
+            outbound_form=OutboundForm.RAW,
             client=client,
         )
     assert "super-secret-key-VALUE-xyz" not in str(info.value)
@@ -260,7 +271,6 @@ def test_privacy_blocks_raw_external_mistral():
 
 
 def test_privacy_and_capability_both_required(monkeypatch):
-    # Capability fails first for wrong model even if privacy would allow synthetic.
     with pytest.raises(ValueError, match="lacks capability"):
         assert_media_allowed(
             provider_id=PROVIDER_MISTRAL_EXTERNAL,
@@ -269,7 +279,6 @@ def test_privacy_and_capability_both_required(monkeypatch):
             data_class=DataClass.SYNTHETIC,
             outbound_form=OutboundForm.RAW,
         )
-    # Privacy fails for raw sensitive on mistral even with right model.
     with pytest.raises(MediaPrivacyError):
         invoke_pdf_ocr(
             OcrPdfRequest(model="mistral-ocr-latest", pdf_bytes=b"%PDF"),
@@ -279,15 +288,82 @@ def test_privacy_and_capability_both_required(monkeypatch):
         )
 
 
-def test_traces_omit_media_by_default(monkeypatch):
-    """При default PHOENIX_TRACE_INCLUDE_IO=false span attrs без сырых байт."""
+def test_media_result_repr_content_free():
+    secret_text = "PERSON SECRET 123456789"
+    result = MediaResult(
+        text=secret_text,
+        provider_id=PROVIDER_GPU_OLLAMA,
+        model="qwen2.5vl:7b",
+        latency_ms=12,
+        page_count=0,
+        image_count=1,
+    )
+    blob = repr(result)
+    assert "PERSON" not in blob
+    assert "SECRET" not in blob
+    assert "123456789" not in blob
+    assert "chars=" in blob
+    assert "provider_id=" in blob
+
+
+def test_privacy_args_required_vision_no_http():
+    client = _CountingClient(lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call")))
+    req = VisionImageRequest(model="qwen2.5vl:7b", images=(b"x",), prompt="p")
+    with pytest.raises(TypeError):
+        invoke_vision(req, outbound_form=OutboundForm.RAW, client=client)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        invoke_vision(req, data_class=DataClass.SYNTHETIC, client=client)  # type: ignore[call-arg]
+    assert client.posts == 0
+    sig = inspect.signature(invoke_vision)
+    assert sig.parameters["data_class"].default is inspect.Parameter.empty
+    assert sig.parameters["outbound_form"].default is inspect.Parameter.empty
+
+
+def test_privacy_args_required_ocr_no_http():
+    client = _CountingClient(lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call")))
+    req = OcrPdfRequest(model="mistral-ocr-latest", pdf_bytes=b"%PDF")
+    with pytest.raises(TypeError):
+        invoke_pdf_ocr(req, outbound_form=OutboundForm.RAW, client=client)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        invoke_pdf_ocr(req, data_class=DataClass.PUBLIC_NO_PII, client=client)  # type: ignore[call-arg]
+    assert client.posts == 0
+    sig = inspect.signature(invoke_pdf_ocr)
+    assert sig.parameters["data_class"].default is inspect.Parameter.empty
+    assert sig.parameters["outbound_form"].default is inspect.Parameter.empty
+
+
+def test_raw_bytes_use_outbound_form_raw_not_sanitized_by_base64(monkeypatch):
+    """Неизменённые PDF bytes → consumer обязан передать RAW; base64 ≠ sanitization."""
+    monkeypatch.setenv("MISTRAL_API_KEY", "test-fake-key-not-real")
+    client = _CountingClient(
+        lambda *a, **k: _FakeResponse(200, {"pages": [{"markdown": "x"}], "usage_info": {"pages_processed": 1}})
+    )
+    # Explicit RAW for unchanged bytes — valid path.
+    invoke_pdf_ocr(
+        OcrPdfRequest(model="mistral-ocr-latest", pdf_bytes=b"%PDF-raw"),
+        data_class=DataClass.PUBLIC_NO_PII,
+        outbound_form=OutboundForm.RAW,
+        client=client,
+    )
+    assert client.posts == 1
+    # SANITIZED without prior consumer sanitization is a consumer policy mistake;
+    # ai-core still accepts the flag but wire still carries original bytes encoding.
+    payload = build_mistral_ocr_payload(
+        model="mistral-ocr-latest", pdf_bytes=b"%PDF-raw", max_pages=1
+    )
+    assert "base64," in payload["document"]["document_url"]
+
+
+def test_tracing_namespaced_safe_attrs_and_no_bypass(monkeypatch):
     monkeypatch.setenv("LOCAL_GPU_OLLAMA_BASE_URL", "http://gpu-ollama.test:11434")
     monkeypatch.delenv("PHOENIX_TRACE_INCLUDE_IO", raising=False)
-    recorded: list[dict[str, Any]] = []
+
+    span_attrs: dict[str, Any] = {}
+    start_attrs: dict[str, Any] = {}
 
     class FakeSpan:
         def set_attribute(self, key, value):
-            recorded.append({key: value})
+            span_attrs[key] = value
 
     class CM:
         def __enter__(self):
@@ -296,18 +372,207 @@ def test_traces_omit_media_by_default(monkeypatch):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr("ai_core.vision.start_llm_span", lambda **kw: CM())
+    def fake_start_llm_span(*, workflow, attributes=None, **_kw):
+        start_attrs.clear()
+        start_attrs.update(attributes or {})
+        start_attrs["workflow"] = workflow
+        # Проверяем реальную семантику sanitizer на входных attrs.
+        for key, value in sanitize_span_attributes(start_attrs).items():
+            span_attrs[key] = value
+        return CM()
+
+    monkeypatch.setattr("ai_core.vision.start_llm_span", fake_start_llm_span)
+
+    ocr_secret = "OCR FULL OUTPUT PERSON SECRET"
     client = _CountingClient(
-        lambda *a, **k: _FakeResponse(200, {"response": "t", "prompt_eval_count": 1, "eval_count": 1})
+        lambda *a, **k: _FakeResponse(
+            200,
+            {"response": ocr_secret, "prompt_eval_count": 2, "eval_count": 4},
+        )
     )
     invoke_vision(
-        VisionImageRequest(model="qwen2.5vl:7b", images=(b"\xff\xd8secretbytes",), prompt="p"),
+        VisionImageRequest(
+            model="qwen2.5vl:7b",
+            images=(b"\xff\xd8secretbytes",),
+            prompt="p",
+        ),
         data_class=DataClass.SYNTHETIC,
+        outbound_form=OutboundForm.RAW,
         client=client,
     )
-    blob = json.dumps(recorded)
+
+    assert span_attrs.get("llm.provider") == PROVIDER_GPU_OLLAMA
+    assert span_attrs.get("llm.model") == "qwen2.5vl:7b"
+    assert span_attrs.get("ai.capability") == ProviderCapability.VISION_IMAGE.value
+    assert "llm.latency_ms" in span_attrs
+    assert span_attrs.get("media.image_count") == 1
+    assert "provider" not in span_attrs
+    assert "model" not in span_attrs
+    assert "latency_ms" not in span_attrs
+
+    # Unnamespaced / secrets rejected by allowlist.
+    assert sanitize_span_attributes({"provider": "x", "api_key": "k", "arbitrary": 1}) == {}
+    assert "provider" not in SAFE_ATTRIBUTE_KEYS
+
+    blob = json.dumps(span_attrs)
     assert "secretbytes" not in blob
-    assert "\\xff\\xd8" not in blob
+    assert ocr_secret not in blob
+    assert "PERSON" not in blob
+    assert "API_KEY" not in blob
+
+
+def test_set_safe_span_attributes_uses_shared_sanitizer():
+    recorded: dict[str, Any] = {}
+
+    class FakeSpan:
+        def set_attribute(self, key, value):
+            recorded[key] = value
+
+    set_safe_span_attributes(
+        FakeSpan(),
+        {
+            "llm.provider": "gpu_ollama",
+            "llm.model": "qwen2.5vl:7b",
+            "ai.capability": "vision_image",
+            "llm.latency_ms": 9,
+            "media.page_count": 2,
+            "media.image_count": 1,
+            "provider": "dropped",
+            "api_key": "secret-key-value",
+            "response": "OCR FULL TEXT",
+        },
+    )
+    assert recorded == {
+        "llm.provider": "gpu_ollama",
+        "llm.model": "qwen2.5vl:7b",
+        "ai.capability": "vision_image",
+        "llm.latency_ms": 9,
+        "media.page_count": 2,
+        "media.image_count": 1,
+    }
+    assert "secret-key-value" not in repr(recorded)
+    assert "OCR FULL TEXT" not in recorded.values()
+
+
+def test_ocr_tracing_page_count_namespaced(monkeypatch):
+    monkeypatch.setenv("MISTRAL_API_KEY", "test-fake-key-not-real")
+    span_attrs: dict[str, Any] = {}
+
+    class FakeSpan:
+        def set_attribute(self, key, value):
+            span_attrs[key] = value
+
+    class CM:
+        def __enter__(self):
+            return FakeSpan()
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_start(*, workflow, attributes=None, **_kw):
+        for key, value in sanitize_span_attributes({**(attributes or {}), "workflow": workflow}).items():
+            span_attrs[key] = value
+        return CM()
+
+    monkeypatch.setattr("ai_core.ocr_pdf.start_llm_span", fake_start)
+    client = _CountingClient(
+        lambda *a, **k: _FakeResponse(
+            200,
+            {"pages": [{"markdown": "SENSITIVE OCR BODY"}], "usage_info": {"pages_processed": 3}},
+        )
+    )
+    invoke_pdf_ocr(
+        OcrPdfRequest(model="mistral-ocr-latest", pdf_bytes=b"%PDF-bytes-secret", max_pages=5),
+        data_class=DataClass.PUBLIC_NO_PII,
+        outbound_form=OutboundForm.RAW,
+        client=client,
+    )
+    assert span_attrs.get("llm.provider") == PROVIDER_MISTRAL_EXTERNAL
+    assert span_attrs.get("media.page_count") == 3
+    assert span_attrs.get("media.page_count_requested") == 5
+    blob = json.dumps(span_attrs)
+    assert "SENSITIVE OCR BODY" not in blob
+    assert "PDF-bytes-secret" not in blob
+    assert "test-fake-key-not-real" not in blob
+
+
+def test_explicit_api_key_optional_policy():
+    assert get_provider_profile(PROVIDER_VM100_LOCAL_OLLAMA).api_key_optional is True
+    assert get_provider_profile(PROVIDER_GPU_OLLAMA).api_key_optional is True
+    assert get_provider_profile(PROVIDER_OLLAMA_CLOUD).api_key_optional is False
+    assert get_provider_profile(PROVIDER_MISTRAL_EXTERNAL).api_key_optional is False
+    assert "AI_PROVIDER" not in get_provider_profile(PROVIDER_OLLAMA_CLOUD).credential_env_keys
+
+
+def test_ai_provider_not_used_as_credential(monkeypatch):
+    monkeypatch.setenv("AI_PROVIDER", "ollama_cloud")
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    endpoint = resolve_provider_endpoint(PROVIDER_OLLAMA_CLOUD)
+    assert endpoint.api_key == ""
+    assert endpoint.api_key_optional is False
+    assert "ollama_cloud" not in repr(endpoint) or endpoint.provider_id == PROVIDER_OLLAMA_CLOUD
+    assert "ollama_cloud" != endpoint.api_key
+
+
+def test_resolve_all_canonical_providers_explicit_metadata(monkeypatch):
+    monkeypatch.setenv("OLLAMA_HOST", "http://local.test:11434")
+    monkeypatch.setenv("LOCAL_GPU_OLLAMA_BASE_URL", "http://gpu.test:11434")
+    monkeypatch.setenv("MISTRAL_API_KEY", "mistral-test-key")
+    monkeypatch.setenv("MISTRAL_API_BASE", "https://api.mistral.ai/v1")
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+    expected_optional = {
+        PROVIDER_VM100_LOCAL_OLLAMA: True,
+        PROVIDER_OLLAMA_CLOUD: False,
+        PROVIDER_GPU_OLLAMA: True,
+        PROVIDER_MISTRAL_EXTERNAL: False,
+    }
+    for pid in CANONICAL_PROVIDER_IDS:
+        ep = resolve_provider_endpoint(pid)
+        assert ep.provider_id == pid
+        assert ep.api_key_optional is expected_optional[pid]
+        assert ep.api_key_optional is get_provider_profile(pid).api_key_optional
+        assert "mistral-test-key" not in repr(ep)
+
+    # Нет name-heuristics в resolve.py
+    import ai_core.resolve as resolve_mod
+    import inspect as _inspect
+
+    src = _inspect.getsource(resolve_mod)
+    assert "endswith" not in src
+    assert "startswith" not in src
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["/tmp/page.png", "https://example.test/page.png", "abc"],
+)
+def test_str_image_rejected_before_network(bad, monkeypatch):
+    monkeypatch.setenv("LOCAL_GPU_OLLAMA_BASE_URL", "http://gpu-ollama.test:11434")
+    client = _CountingClient(lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call")))
+    with pytest.raises(TypeError):
+        invoke_vision(
+            VisionImageRequest(model="qwen2.5vl:7b", images=(bad,), prompt="p"),  # type: ignore[arg-type]
+            data_class=DataClass.SYNTHETIC,
+            outbound_form=OutboundForm.RAW,
+            client=client,
+        )
+    assert client.posts == 0
+
+
+def test_bytes_image_still_works(monkeypatch):
+    monkeypatch.setenv("LOCAL_GPU_OLLAMA_BASE_URL", "http://gpu-ollama.test:11434")
+    client = _CountingClient(
+        lambda *a, **k: _FakeResponse(200, {"response": "ok", "prompt_eval_count": 1, "eval_count": 1})
+    )
+    result = invoke_vision(
+        VisionImageRequest(model="qwen2.5vl:7b", images=(b"\x89PNG",), prompt="p"),
+        data_class=DataClass.SYNTHETIC,
+        outbound_form=OutboundForm.RAW,
+        client=client,
+    )
+    assert client.posts == 1
+    assert result.image_count == 1
 
 
 def test_no_nested_fallback_api_exported():
@@ -323,7 +588,5 @@ def test_no_nested_fallback_api_exported():
 
 
 def test_supports_multimodal_profile_unchanged():
-    from ai_core.provider_catalog import get_provider_profile
-
     assert get_provider_profile(PROVIDER_GPU_OLLAMA).supports_multimodal is False
     assert get_provider_profile(PROVIDER_MISTRAL_EXTERNAL).supports_multimodal is False

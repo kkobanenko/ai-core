@@ -41,21 +41,13 @@ def resolve_provider_endpoint(
     *,
     default_base_url: str = "",
 ) -> ResolvedProviderEndpoint:
-    """Собрать endpoint из ProviderProfile.endpoint_env_keys / credential_env_keys."""
+    """Собрать endpoint из явных полей ProviderProfile (без name-heuristics)."""
     profile: ProviderProfile = get_provider_profile(provider_id)
     base = _first_env(profile.endpoint_env_keys) or default_base_url.strip()
     api_key = _first_env(profile.credential_env_keys)
-    # Без credential env — ключ опционален (локальный Ollama).
-    optional = len(profile.credential_env_keys) == 0
-    if not optional and not api_key:
-        # Для mistral credential обязателен; сообщение без значения.
-        optional = False
-    if len(profile.credential_env_keys) > 0 and provider_id.endswith("ollama"):
-        # GPU Ollama: ключ опционален (как в prozakupki api_key_optional).
-        optional = True
     return ResolvedProviderEndpoint(
         provider_id=provider_id,
         base_url=base.rstrip("/"),
         api_key=api_key,
-        api_key_optional=optional or len(profile.credential_env_keys) == 0,
+        api_key_optional=profile.api_key_optional,
     )

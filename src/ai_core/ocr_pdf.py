@@ -15,6 +15,7 @@ from ai_core.media_gate import assert_media_allowed
 from ai_core.privacy import DataClass, OutboundForm
 from ai_core.provider_catalog import PROVIDER_MISTRAL_EXTERNAL
 from ai_core.resolve import resolve_provider_endpoint
+from ai_core.safe_attributes import set_safe_span_attributes
 from ai_core.tracing import start_llm_span
 
 # Публичный default base (не секрет); endpoint всё же предпочитает env.
@@ -35,6 +36,7 @@ def build_mistral_ocr_payload(
     pdf_bytes: bytes,
     max_pages: int,
 ) -> dict[str, Any]:
+    """Собрать wire payload. Base64 здесь — только encoding, не sanitization."""
     encoded = base64.b64encode(pdf_bytes).decode("ascii")
     return {
         "model": model,
@@ -63,12 +65,16 @@ def _parse_mistral_pages(body: dict[str, Any]) -> tuple[str, int]:
 def invoke_pdf_ocr(
     request: OcrPdfRequest,
     *,
+    data_class: DataClass,
+    outbound_form: OutboundForm,
     provider_id: str = PROVIDER_MISTRAL_EXTERNAL,
-    data_class: DataClass = DataClass.PUBLIC_NO_PII,
-    outbound_form: OutboundForm = OutboundForm.SANITIZED,
     client: httpx.Client | None = None,
 ) -> MediaResult:
-    """Один upstream-вызов Mistral OCR. Без retry/fallback/другого провайдера."""
+    """Один upstream-вызов Mistral OCR. Без retry/fallback/другого провайдера.
+
+    data_class и outbound_form обязательны (keyword-only): fail-open defaults запрещены.
+    Неизменённые PDF bytes = OutboundForm.RAW (base64 ≠ sanitization).
+    """
     assert_media_allowed(
         provider_id=provider_id,
         model=request.model,
@@ -102,11 +108,12 @@ def invoke_pdf_ocr(
     owned = client is None
     http = client or httpx.Client(timeout=request.timeout_seconds)
     started = time.perf_counter()
+    page_count_requested = max(1, int(request.max_pages))
     attrs = {
-        "provider": provider_id,
-        "model": request.model,
-        "capability": ProviderCapability.OCR_PDF.value,
-        "page_count_requested": max(1, int(request.max_pages)),
+        "llm.provider": provider_id,
+        "llm.model": request.model,
+        "ai.capability": ProviderCapability.OCR_PDF.value,
+        "media.page_count_requested": page_count_requested,
     }
     try:
         with start_llm_span(workflow="ai_core.invoke_pdf_ocr", attributes=attrs) as span:
@@ -129,13 +136,15 @@ def invoke_pdf_ocr(
             body = response.json()
             latency_ms = int((time.perf_counter() - started) * 1000)
             text, page_count = _parse_mistral_pages(body)
-            if span is not None:
-                try:
-                    span.set_attribute("status", "ok")
-                    span.set_attribute("latency_ms", latency_ms)
-                    span.set_attribute("page_count", page_count)
-                except Exception:
-                    pass
+            set_safe_span_attributes(
+                span,
+                {
+                    "llm.status": "ok",
+                    "llm.latency_ms": latency_ms,
+                    "media.page_count": page_count,
+                    "media.page_count_requested": page_count_requested,
+                },
+            )
             return MediaResult(
                 text=text,
                 provider_id=provider_id,

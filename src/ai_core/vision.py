@@ -15,20 +15,27 @@ from ai_core.media_gate import assert_media_allowed
 from ai_core.privacy import DataClass, OutboundForm
 from ai_core.provider_catalog import PROVIDER_GPU_OLLAMA
 from ai_core.resolve import resolve_provider_endpoint
+from ai_core.safe_attributes import set_safe_span_attributes
 from ai_core.tracing import start_llm_span
 
 
-def _normalize_images(images: tuple[bytes | str, ...]) -> list[str]:
-    """bytes → base64; str считаем уже base64."""
+def _normalize_images(images: tuple[bytes, ...]) -> list[str]:
+    """Только bytes → base64 для wire. str / path / URL запрещены.
+
+    Важно: base64 encoding ≠ sanitization. Исходные байты уходят как OutboundForm.RAW,
+    если consumer явно не подготовил sanitized представление заранее.
+    """
     out: list[str] = []
     for item in images:
-        if isinstance(item, bytes):
-            out.append(base64.b64encode(item).decode("ascii"))
-        else:
-            text = str(item).strip()
-            if not text:
-                raise ValueError("empty image entry")
-            out.append(text)
+        if not isinstance(item, (bytes, bytearray)):
+            raise TypeError(
+                "VisionImageRequest.images accepts bytes only; "
+                f"got {type(item).__name__} (paths/URLs/base64 strings are rejected)"
+            )
+        raw = bytes(item)
+        if not raw:
+            raise ValueError("empty image entry")
+        out.append(base64.b64encode(raw).decode("ascii"))
     if not out:
         raise ValueError("images is empty")
     return out
@@ -52,12 +59,16 @@ def build_ollama_vision_payload(
 def invoke_vision(
     request: VisionImageRequest,
     *,
+    data_class: DataClass,
+    outbound_form: OutboundForm,
     provider_id: str = PROVIDER_GPU_OLLAMA,
-    data_class: DataClass = DataClass.PUBLIC_NO_PII,
-    outbound_form: OutboundForm = OutboundForm.RAW,
     client: httpx.Client | None = None,
 ) -> MediaResult:
-    """Один upstream-вызов Ollama vision. Без retry/fallback/другого провайдера."""
+    """Один upstream-вызов Ollama vision. Без retry/fallback/другого провайдера.
+
+    data_class и outbound_form обязательны (keyword-only): fail-open defaults запрещены.
+    Неизменённые image bytes = OutboundForm.RAW (base64 ≠ sanitization).
+    """
     assert_media_allowed(
         provider_id=provider_id,
         model=request.model,
@@ -86,11 +97,12 @@ def invoke_vision(
     owned = client is None
     http = client or httpx.Client()
     started = time.perf_counter()
+    # Только namespaced keys из SAFE_ATTRIBUTE_KEYS.
     attrs = {
-        "provider": provider_id,
-        "model": request.model,
-        "capability": ProviderCapability.VISION_IMAGE.value,
-        "image_count": len(images_b64),
+        "llm.provider": provider_id,
+        "llm.model": request.model,
+        "ai.capability": ProviderCapability.VISION_IMAGE.value,
+        "media.image_count": len(images_b64),
     }
     try:
         with start_llm_span(workflow="ai_core.invoke_vision", attributes=attrs) as span:
@@ -121,14 +133,17 @@ def invoke_vision(
             text = str(body.get("response") or "").strip()
             input_tokens = int(body.get("prompt_eval_count") or 0)
             output_tokens = int(body.get("eval_count") or 0)
-            if span is not None:
-                try:
-                    span.set_attribute("status", "ok")
-                    span.set_attribute("latency_ms", latency_ms)
-                    span.set_attribute("input_tokens", input_tokens)
-                    span.set_attribute("output_tokens", output_tokens)
-                except Exception:
-                    pass
+            # Через общий sanitizer — без прямого span.set_attribute bypass.
+            set_safe_span_attributes(
+                span,
+                {
+                    "llm.status": "ok",
+                    "llm.latency_ms": latency_ms,
+                    "llm.input_tokens": input_tokens,
+                    "llm.output_tokens": output_tokens,
+                    "media.image_count": len(images_b64),
+                },
+            )
             return MediaResult(
                 text=text,
                 provider_id=provider_id,

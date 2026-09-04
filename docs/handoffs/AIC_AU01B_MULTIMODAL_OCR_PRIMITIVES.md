@@ -64,8 +64,22 @@ Secrets must not appear in `repr()`, exceptions, logs, trace attributes, or `Med
 
 ## Tracing
 
-Phoenix surface reused. Safe attrs: workflow, provider, model, capability, status, latency_ms, tokens, page/image counts.  
-Default `PHOENIX_TRACE_INCLUDE_IO=false` — no raw image/PDF bytes or full OCR text in spans.
+Phoenix surface reused via shared `sanitize_span_attributes` / `set_safe_span_attributes`.  
+Namespaced safe keys only: `llm.provider`, `llm.model`, `llm.status`, `llm.latency_ms`, `llm.input_tokens`, `llm.output_tokens`, `ai.capability`, `media.page_count`, `media.image_count`, `media.page_count_requested`.  
+Default `PHOENIX_TRACE_INCLUDE_IO=false` — no raw image/PDF bytes or full OCR text in spans. No direct `span.set_attribute` bypass from media code.
+
+## Senior-review repairs (AIC-AU01B1)
+
+Architecture accepted; mandatory fixes applied before any release review:
+
+1. **MediaResult repr is content-free** — metadata only (`chars`, counts); no text/preview/OCR excerpt.
+2. **Privacy classification is mandatory** — `data_class` and `outbound_form` are required keyword-only args on `invoke_vision` / `invoke_pdf_ocr` (no `PUBLIC_NO_PII` / `SANITIZED` defaults).
+3. **Base64 ≠ sanitization** — encoding for wire transport does not change outbound form. Unchanged image/PDF bytes must be declared `OutboundForm.RAW` by the caller. `SANITIZED` only after the consumer actually produced a sanitized representation.
+4. **Trace attributes use shared allowlist** — namespaced keys only; `set_safe_span_attributes` wraps `sanitize_span_attributes`.
+5. **Credential optionality is explicit** — `ProviderProfile.api_key_optional` on catalog entries; resolver has no `endswith("ollama")` heuristics. `AI_PROVIDER` is not a credential env key.
+6. **Vision input is bytes-only** — paths/URLs/base64 strings rejected with `TypeError` before any network call.
+
+Alpha copyright/rights remain outside ai-core: Alpha decides whether source bytes may leave the product boundary, then passes explicit `data_class` / `outbound_form`.
 
 ## Consumer integration (future — not in this WP)
 

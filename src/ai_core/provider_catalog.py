@@ -85,6 +85,8 @@ class ProviderProfile:
     priority_hint: int
     endpoint_env_keys: tuple[str, ...]
     credential_env_keys: tuple[str, ...]
+    # Явная политика: True = ключ опционален (локальные Ollama). Без name-heuristics.
+    api_key_optional: bool
     default_model_env: str
     historical_names: tuple[str, ...]
 
@@ -108,6 +110,7 @@ def _build_catalog() -> dict[str, ProviderProfile]:
             priority_hint=10,
             endpoint_env_keys=("OLLAMA_HOST", "OLLAMA_BASE_URL"),
             credential_env_keys=(),
+            api_key_optional=True,
             default_model_env="OLLAMA_MODEL",
             historical_names=("ollama_local", "ollama sidecar", "127.0.0.1:11434"),
         ),
@@ -126,7 +129,9 @@ def _build_catalog() -> dict[str, ProviderProfile]:
             latency_class=LatencyClass.MEDIUM,
             priority_hint=30,
             endpoint_env_keys=("OLLAMA_HOST", "OLLAMA_BASE_URL"),
-            credential_env_keys=("OLLAMA_API_KEY", "AI_PROVIDER"),
+            # AI_PROVIDER — селектор провайдера, не credential.
+            credential_env_keys=("OLLAMA_API_KEY",),
+            api_key_optional=False,
             default_model_env="OLLAMA_MODEL",
             historical_names=("ollama_cloud",),
         ),
@@ -150,6 +155,7 @@ def _build_catalog() -> dict[str, ProviderProfile]:
                 "LOCAL_GPU_OLLAMA_URL",
             ),
             credential_env_keys=("LOCAL_GPU_OLLAMA_API_KEY",),
+            api_key_optional=True,
             default_model_env="LOCAL_GPU_OLLAMA_MODEL",
             historical_names=(
                 "local_gpu_ollama",
@@ -172,6 +178,7 @@ def _build_catalog() -> dict[str, ProviderProfile]:
             priority_hint=40,
             endpoint_env_keys=("MISTRAL_API_BASE", "MISTRAL_ENDPOINT"),
             credential_env_keys=("MISTRAL_API_KEY",),
+            api_key_optional=False,
             default_model_env="MISTRAL_MODEL",
             historical_names=("mistral",),
         ),

@@ -8,10 +8,13 @@ from typing import Any
 
 @dataclass(frozen=True)
 class VisionImageRequest:
-    """Один вызов vision: изображения + prompt (prompt задаёт consumer)."""
+    """Один вызов vision: только bytes изображений + prompt (prompt задаёт consumer).
+
+    str / path / URL не принимаются — без «может быть base64» ambiguity.
+    """
 
     model: str
-    images: tuple[bytes | str, ...]
+    images: tuple[bytes, ...]
     prompt: str
     timeout_seconds: float = 120.0
 
@@ -41,9 +44,9 @@ class MediaResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __repr__(self) -> str:
-        # Не печатаем полный OCR text в repr (может быть длинным/чувствительным).
-        preview = (self.text[:40] + "…") if len(self.text) > 40 else self.text
+        # Content-free: никаких text / preview / OCR excerpt.
         return (
             f"MediaResult(provider_id={self.provider_id!r}, model={self.model!r}, "
-            f"latency_ms={self.latency_ms}, chars={len(self.text)}, text_preview={preview!r})"
+            f"latency_ms={self.latency_ms}, chars={len(self.text)}, "
+            f"page_count={self.page_count}, image_count={self.image_count})"
         )
