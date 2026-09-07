@@ -1,8 +1,8 @@
 """Canonical AI provider catalog.
 
-This module is intentionally dependency-light and stores policy metadata plus
-environment variable *names* only. Secret values are resolved by transport
-layers, not by the catalog.
+The catalog identifies provider/network boundaries. Model-specific modality lives
+in :mod:`ai_core.capabilities`. The catalog stores environment variable *names*
+only; credential values are resolved by transport layers.
 """
 
 from __future__ import annotations
@@ -31,7 +31,9 @@ class BackendKind(str, Enum):
     """Provider transport/SDK family."""
 
     OLLAMA = "ollama"
+    OPENAI_COMPATIBLE = "openai_compatible"
     MISTRAL = "mistral"
+    FASTER_WHISPER_HTTP = "faster_whisper_http"
 
 
 class HealthProbeKind(str, Enum):
@@ -59,13 +61,19 @@ class LatencyClass(str, Enum):
 PROVIDER_VM100_LOCAL_OLLAMA = "vm100_local_ollama"
 PROVIDER_OLLAMA_CLOUD = "ollama_cloud"
 PROVIDER_GPU_OLLAMA = "gpu_ollama"
+PROVIDER_GPU_WHISPER = "gpu_whisper"
 PROVIDER_MISTRAL_EXTERNAL = "mistral_external"
+PROVIDER_OPENAI_EXTERNAL = "openai_external"
+PROVIDER_DEEPSEEK_EXTERNAL = "deepseek_external"
 
 CANONICAL_PROVIDER_IDS = (
     PROVIDER_VM100_LOCAL_OLLAMA,
     PROVIDER_OLLAMA_CLOUD,
     PROVIDER_GPU_OLLAMA,
+    PROVIDER_GPU_WHISPER,
     PROVIDER_MISTRAL_EXTERNAL,
+    PROVIDER_OPENAI_EXTERNAL,
+    PROVIDER_DEEPSEEK_EXTERNAL,
 )
 
 
@@ -141,6 +149,8 @@ def _build_catalog() -> dict[str, ProviderProfile]:
         PROVIDER_GPU_OLLAMA: ProviderProfile(
             provider_id=PROVIDER_GPU_OLLAMA,
             backend_kind=BackendKind.OLLAMA,
+            # Current runtime reaches this endpoint over a private overlay, but no
+            # accepted trust-boundary decision was found. RAW remains fail-closed.
             network_boundary=NetworkBoundary.UNKNOWN_BOUNDARY,
             raw_pii_policy=PiiPolicy.DENY,
             sanitized_pii_policy=PiiPolicy.ALLOW,
@@ -160,12 +170,34 @@ def _build_catalog() -> dict[str, ProviderProfile]:
             default_model_env="LOCAL_GPU_OLLAMA_MODEL",
             historical_names=(
                 "local_gpu_ollama",
+                "local_gpu_vision",
                 "gpu-ollama",
                 "100.91.166.5:11434",
             ),
             api_key_optional=True,
             endpoint_default_scheme="http",
             endpoint_default_port=11434,
+        ),
+        PROVIDER_GPU_WHISPER: ProviderProfile(
+            provider_id=PROVIDER_GPU_WHISPER,
+            backend_kind=BackendKind.FASTER_WHISPER_HTTP,
+            network_boundary=NetworkBoundary.UNKNOWN_BOUNDARY,
+            raw_pii_policy=PiiPolicy.DENY,
+            sanitized_pii_policy=PiiPolicy.ALLOW,
+            supports_structured_json=False,
+            supports_text=False,
+            supports_multimodal=False,
+            health_probe_kind=HealthProbeKind.NONE,
+            cost_class=CostClass.FREE_LOCAL,
+            latency_class=LatencyClass.LOW,
+            priority_hint=20,
+            endpoint_env_keys=("LOCAL_GPU_WHISPER_BASE_URL", "LOCAL_GPU_WHISPER_URL"),
+            credential_env_keys=("LOCAL_GPU_WHISPER_API_KEY", "AI_API_KEY"),
+            default_model_env="LOCAL_GPU_WHISPER_MODEL",
+            historical_names=("local_gpu_whisper",),
+            api_key_optional=True,
+            endpoint_default_scheme="http",
+            endpoint_default_port=8092,
         ),
         PROVIDER_MISTRAL_EXTERNAL: ProviderProfile(
             provider_id=PROVIDER_MISTRAL_EXTERNAL,
@@ -181,9 +213,51 @@ def _build_catalog() -> dict[str, ProviderProfile]:
             latency_class=LatencyClass.MEDIUM,
             priority_hint=40,
             endpoint_env_keys=("MISTRAL_API_BASE", "MISTRAL_ENDPOINT"),
-            credential_env_keys=("MISTRAL_API_KEY",),
+            credential_env_keys=("MISTRAL_API_KEY", "AI_API_KEY"),
             default_model_env="MISTRAL_MODEL",
-            historical_names=("mistral",),
+            historical_names=("mistral", "mistral_ocr"),
+            api_key_optional=False,
+            endpoint_default_scheme="https",
+            endpoint_default_port=None,
+        ),
+        PROVIDER_OPENAI_EXTERNAL: ProviderProfile(
+            provider_id=PROVIDER_OPENAI_EXTERNAL,
+            backend_kind=BackendKind.OPENAI_COMPATIBLE,
+            network_boundary=NetworkBoundary.EXTERNAL_CLOUD,
+            raw_pii_policy=PiiPolicy.DENY,
+            sanitized_pii_policy=PiiPolicy.ALLOW,
+            supports_structured_json=True,
+            supports_text=True,
+            supports_multimodal=False,
+            health_probe_kind=HealthProbeKind.NONE,
+            cost_class=CostClass.UNKNOWN,
+            latency_class=LatencyClass.UNKNOWN,
+            priority_hint=50,
+            endpoint_env_keys=("OPENAI_BASE_URL",),
+            credential_env_keys=("OPENAI_API_KEY", "AI_API_KEY"),
+            default_model_env="OPENAI_MODEL",
+            historical_names=("openai",),
+            api_key_optional=False,
+            endpoint_default_scheme="https",
+            endpoint_default_port=None,
+        ),
+        PROVIDER_DEEPSEEK_EXTERNAL: ProviderProfile(
+            provider_id=PROVIDER_DEEPSEEK_EXTERNAL,
+            backend_kind=BackendKind.OPENAI_COMPATIBLE,
+            network_boundary=NetworkBoundary.EXTERNAL_CLOUD,
+            raw_pii_policy=PiiPolicy.DENY,
+            sanitized_pii_policy=PiiPolicy.ALLOW,
+            supports_structured_json=True,
+            supports_text=True,
+            supports_multimodal=False,
+            health_probe_kind=HealthProbeKind.NONE,
+            cost_class=CostClass.UNKNOWN,
+            latency_class=LatencyClass.UNKNOWN,
+            priority_hint=45,
+            endpoint_env_keys=("DEEPSEEK_BASE_URL",),
+            credential_env_keys=("DEEPSEEK_API_KEY", "AI_API_KEY"),
+            default_model_env="DEEPSEEK_MODEL",
+            historical_names=("deepseek",),
             api_key_optional=False,
             endpoint_default_scheme="https",
             endpoint_default_port=None,
