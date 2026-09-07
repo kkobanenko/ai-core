@@ -115,7 +115,7 @@ Additive modules ported from the proven provider line, reconciled onto current m
 - `src/ai_core/provider_catalog.py`
 - `src/ai_core/capabilities.py`
 - `src/ai_core/privacy.py`
-- additive root exports in `src/ai_core/__init__.py`
+- policy APIs exposed through their submodules; root `ai_core.__all__` remains exactly v0.1-compatible
 - `tests/test_provider_policy_foundation.py`
 
 Properties of this slice:
@@ -123,7 +123,7 @@ Properties of this slice:
 - no LangChain dependency;
 - no httpx dependency;
 - no change to `pyproject.toml`;
-- current tracing exports are preserved;
+- current tracing exports and exact root `__all__` are preserved;
 - provider catalog stores env names, not credential values;
 - unknown model capabilities fail closed;
 - `SECRET + RAW` is always blocked;
@@ -172,5 +172,5 @@ Before merge:
 1. Existing main tests must stay green.
 2. New provider-policy tests must pass on Python 3.10+.
 3. Diff must show no `pyproject.toml` dependency expansion.
-4. Public v0.1-shaped tracing API contract must remain intact.
+4. Public v0.1-shaped tracing API contract must remain intact, including exact root `__all__`.
 5. No consumer repository is modified by this branch.
