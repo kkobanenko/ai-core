@@ -18,13 +18,19 @@ def test_catalog_keeps_provider_identities_separate_and_secret_free():
         "vm100_local_ollama",
         "ollama_cloud",
         "gpu_ollama",
+        "gpu_whisper",
         "mistral_external",
+        "openai_external",
+        "deepseek_external",
     }
 
     assert catalog["vm100_local_ollama"].network_boundary == NetworkBoundary.LOCAL_SAME_HOST
     assert catalog["ollama_cloud"].network_boundary == NetworkBoundary.EXTERNAL_CLOUD
     assert catalog["gpu_ollama"].network_boundary == NetworkBoundary.UNKNOWN_BOUNDARY
+    assert catalog["gpu_whisper"].network_boundary == NetworkBoundary.UNKNOWN_BOUNDARY
     assert catalog["mistral_external"].network_boundary == NetworkBoundary.EXTERNAL_CLOUD
+    assert catalog["openai_external"].network_boundary == NetworkBoundary.EXTERNAL_CLOUD
+    assert catalog["deepseek_external"].network_boundary == NetworkBoundary.EXTERNAL_CLOUD
 
     for profile in catalog.values():
         names_only = " ".join(profile.endpoint_env_keys + profile.credential_env_keys)
@@ -37,9 +43,15 @@ def test_sensitive_raw_fails_closed_for_external_and_unknown_boundaries():
     raw = OutboundForm.RAW
 
     assert is_eligible_for_outbound(get_provider_profile("vm100_local_ollama"), private, raw)
-    assert not is_eligible_for_outbound(get_provider_profile("ollama_cloud"), private, raw)
-    assert not is_eligible_for_outbound(get_provider_profile("gpu_ollama"), private, raw)
-    assert not is_eligible_for_outbound(get_provider_profile("mistral_external"), private, raw)
+    for provider_id in (
+        "ollama_cloud",
+        "gpu_ollama",
+        "gpu_whisper",
+        "mistral_external",
+        "openai_external",
+        "deepseek_external",
+    ):
+        assert not is_eligible_for_outbound(get_provider_profile(provider_id), private, raw)
 
 
 def test_secret_raw_is_blocked_even_for_local_provider():
