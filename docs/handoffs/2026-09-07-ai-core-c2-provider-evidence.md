@@ -103,7 +103,7 @@ Expected coverage:
 - current model capability/evidence tests;
 - STT capability tests.
 
-CI result is recorded in the stacked PR after GitHub Actions completes.
+CI mechanics note: repository CI is configured only for pull requests targeting `main`. The C2 PR is normally stacked on the foundation branch, so for validation only its draft PR may be temporarily retargeted to `main`, receive a synchronize commit, run CI, and then be returned to the foundation base. This does not authorize merge and does not modify `main`.
 
 ## Risks
 
