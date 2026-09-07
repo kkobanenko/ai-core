@@ -1,14 +1,14 @@
-from ai_core import (
-    DataClass,
-    NetworkBoundary,
-    OutboundForm,
-    PiiPolicy,
+from ai_core.capabilities import (
     ProviderCapability,
-    get_provider_catalog,
-    get_provider_profile,
-    is_eligible_for_outbound,
     model_has_capability,
     require_model_capability,
+)
+from ai_core.privacy import DataClass, OutboundForm, is_eligible_for_outbound
+from ai_core.provider_catalog import (
+    NetworkBoundary,
+    PiiPolicy,
+    get_provider_catalog,
+    get_provider_profile,
 )
 
 
