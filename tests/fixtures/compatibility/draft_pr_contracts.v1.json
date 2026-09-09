@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-09-09",
+  "implementation_authorized": false,
+  "accepted_provider_ids": ["vm100_local_ollama", "gpu_ollama", "ollama_cloud", "mistral_external"],
+  "pending_capabilities": ["STT_SEGMENTS"],
+  "pull_requests": {
+    "3": {
+      "head_sha": "4e26d67b825194e489a6a8b553c2a53dfea2a81f",
+      "base_sha": "7569441c18362cfd15524ad73f56f7f35580c86f",
+      "state": "OPEN",
+      "draft": true,
+      "ci": "green",
+      "review": "none",
+      "logical_blocks": [
+        {"name": "dependency-light submodules with unchanged root API", "disposition": "KEEP AS-IS"},
+        {"name": "catalog limited to four accepted provider identities", "disposition": "REQUIRES GOVERNANCE DECISION"},
+        {"name": "SECRET eligibility after sanitization or surrogation", "disposition": "REJECT / REDESIGN"},
+        {"name": "provider-level capability hints as routing evidence", "disposition": "KEEP AFTER FIX"},
+        {"name": "runtime transports service and consumer changes absent", "disposition": "KEEP AS-IS"}
+      ]
+    },
+    "4": {
+      "head_sha": "1b2569a612968a3ac5099dea955cfccdcb191d52",
+      "base_sha": "4e26d67b825194e489a6a8b553c2a53dfea2a81f",
+      "state": "OPEN",
+      "draft": true,
+      "ci": "green",
+      "review": "none",
+      "logical_blocks": [
+        {"name": "fail-closed aliases limited to accepted identities", "disposition": "KEEP AFTER FIX"},
+        {"name": "model-scoped evidence levels", "disposition": "KEEP AFTER FIX"},
+        {"name": "gpu_whisper openai_external and deepseek_external identities", "disposition": "SPLIT INTO LATER WP"},
+        {"name": "STT_SEGMENTS records", "disposition": "SPLIT INTO LATER WP"},
+        {"name": "configuration-only records labeled as proven capability", "disposition": "REJECT / REDESIGN"}
+      ]
+    },
+    "5": {
+      "head_sha": "25c269bb93dd37bd9b1556051972f5e1e60b34ad",
+      "base_sha": "4e26d67b825194e489a6a8b553c2a53dfea2a81f",
+      "state": "OPEN",
+      "draft": true,
+      "ci": "green",
+      "review": "none",
+      "logical_blocks": [
+        {"name": "deterministic deadline arithmetic", "disposition": "KEEP AS-IS"},
+        {"name": "error descriptors aligned to transition taxonomy", "disposition": "KEEP AFTER FIX"},
+        {"name": "UNKNOWN health eligibility", "disposition": "REQUIRES GOVERNANCE DECISION"},
+        {"name": "caller order versus global priority hint", "disposition": "REQUIRES GOVERNANCE DECISION"},
+        {"name": "missing explicit egress allowlist treated as all providers", "disposition": "REJECT / REDESIGN"},
+        {"name": "inherited all-form SECRET handling", "disposition": "REJECT / REDESIGN"},
+        {"name": "retry fallback executor and provider transports", "disposition": "SPLIT INTO LATER WP"},
+        {"name": "planning objects with no network execution", "disposition": "KEEP AFTER FIX"}
+      ]
+    }
+  }
+}

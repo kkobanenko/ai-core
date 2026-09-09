@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "desired_contract": {
+    "data_class": "SECRET",
+    "rows": [
+      {"outbound_form": "RAW", "network_boundary": "LOCAL_SAME_HOST", "inference_execution": "denied", "eligible_routes": 0, "provider_attempts": 0},
+      {"outbound_form": "RAW", "network_boundary": "EXTERNAL_CLOUD", "inference_execution": "denied", "eligible_routes": 0, "provider_attempts": 0},
+      {"outbound_form": "RAW", "network_boundary": "UNKNOWN_BOUNDARY", "inference_execution": "denied", "eligible_routes": 0, "provider_attempts": 0},
+      {"outbound_form": "SANITIZED", "network_boundary": "LOCAL_SAME_HOST", "inference_execution": "denied", "eligible_routes": 0, "provider_attempts": 0},
+      {"outbound_form": "SANITIZED", "network_boundary": "EXTERNAL_CLOUD", "inference_execution": "denied", "eligible_routes": 0, "provider_attempts": 0},
+      {"outbound_form": "SANITIZED", "network_boundary": "UNKNOWN_BOUNDARY", "inference_execution": "denied", "eligible_routes": 0, "provider_attempts": 0},
+      {"outbound_form": "SURROGATED", "network_boundary": "LOCAL_SAME_HOST", "inference_execution": "denied", "eligible_routes": 0, "provider_attempts": 0},
+      {"outbound_form": "SURROGATED", "network_boundary": "EXTERNAL_CLOUD", "inference_execution": "denied", "eligible_routes": 0, "provider_attempts": 0},
+      {"outbound_form": "SURROGATED", "network_boundary": "UNKNOWN_BOUNDARY", "inference_execution": "denied", "eligible_routes": 0, "provider_attempts": 0}
+    ],
+    "preserving_transitions": ["alias_resolution", "sanitization", "retry", "fallback"]
+  },
+  "observed_pr3_conflict": {
+    "pr": 3,
+    "head_sha": "4e26d67b825194e489a6a8b553c2a53dfea2a81f",
+    "RAW": {"eligible_provider_ids": []},
+    "SANITIZED": {"eligible_provider_ids": ["vm100_local_ollama", "ollama_cloud", "gpu_ollama", "mistral_external"]},
+    "SURROGATED": {"eligible_provider_ids": ["vm100_local_ollama", "ollama_cloud", "gpu_ollama", "mistral_external"]},
+    "conflicting_forms": ["SANITIZED", "SURROGATED"],
+    "disposition": "REJECT / REDESIGN"
+  }
+}
