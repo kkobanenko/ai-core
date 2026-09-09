@@ -1,0 +1,384 @@
+{
+  "schema_version": 1,
+  "implementation_authorized": false,
+  "accepted_provider_ids": [
+    "vm100_local_ollama",
+    "gpu_ollama",
+    "ollama_cloud",
+    "mistral_external"
+  ],
+  "accepted_capabilities": ["TRACING"],
+  "governance_pending_capabilities": ["TEXT", "STRUCTURED_JSON", "VISION_IMAGE", "OCR_PDF", "STT_SEGMENTS"],
+  "consumers": {
+    "prozakupki": {
+      "provenance": {
+        "repository": "prozakupki-meta/prozakupki-platform",
+        "sha": "70f9cf001b3073132858236bbf653b687a139cc7",
+        "ref": "feat/img2a-image-description-contract-20260906",
+        "role": "consumer_and_rich_evidence_source",
+        "authority": "tracked_checkout",
+        "paths": [
+          "services/zakupki-monitor/Dockerfile",
+          "services/zakupki-monitor/utils/ai_provider.py"
+        ]
+      },
+      "observed_evidence": {
+        "status": "observed_not_promoted",
+        "facts": [
+          {"kind": "contains", "path": "services/zakupki-monitor/Dockerfile", "match": "ai-core.git@v0.2.0"},
+          {"kind": "contains", "path": "services/zakupki-monitor/utils/ai_provider.py", "match": "settings.ai_adapter == \"langchain\""}
+        ]
+      },
+      "consumer_requirement": {"old_execution_remains_authoritative": true, "structured_output_validation_owner": "consumer"},
+      "accepted_platform_contract": {"provider_ids_limited_to_allowlist": true, "nested_fallback_forbidden": true},
+      "proposed_behavior": {"migration_in_this_work_package": false},
+      "governance_pending": {"questions": ["Which execution owner and rollout unit will be approved for the late migration?"]},
+      "current_path": "legacy_default_optional_langchain_v020_adapter",
+      "ai_core_pin": "v0.2.0",
+      "capability_requirements": [
+        {"capability": "TEXT_AND_STRUCTURED_JSON", "evidence_scope": "execution_path", "evidence_level": "unit_tested"},
+        {"capability": "VISION_OCR_STT", "evidence_scope": "model", "evidence_level": "configured"}
+      ],
+      "retry": {
+        "provider_call": {"owner": "consumer_or_selected_adapter", "status": "observed"},
+        "provider_fallback": {"owner": "consumer_or_ai_core_v02_client", "status": "path_dependent"},
+        "durable_job": {"owner": "consumer", "max_attempts": null}
+      },
+      "fallback_owner": "consumer",
+      "privacy": {"status": "feature_specific_no_single_central_policy"},
+      "tracing": {"status": "phoenix_integrated"},
+      "rollback": {"old_path": "AI_ADAPTER=legacy", "activation": "configuration_switch"},
+      "gaps": ["fallback ownership varies by selected path", "media capabilities are not a shared accepted contract"],
+      "risk": "very_high",
+      "representable": "partial"
+    },
+    "kmo": {
+      "provenance": {
+        "repository": "kmo",
+        "sha": "31f6f9b782b4ce7556c23b1e667181d0d6d8e36e",
+        "ref": "main",
+        "role": "read_only_reference",
+        "authority": "tracked_checkout",
+        "paths": ["services/operations-service/app/modules/ai/provider_config.py"]
+      },
+      "observed_evidence": {
+        "status": "read_only_lineage_evidence",
+        "facts": [
+          {"kind": "contains", "path": "services/operations-service/app/modules/ai/provider_config.py", "match": "AI_PROVIDER_CHAIN"},
+          {"kind": "contains", "path": "services/operations-service/app/modules/ai/provider_config.py", "match": "AI_PROVIDER_FALLBACK_CHAIN"}
+        ]
+      },
+      "consumer_requirement": {"copied_registry_and_direct_clients_remain_authoritative": true},
+      "accepted_platform_contract": {"write_scope": "none", "nested_fallback_forbidden": true},
+      "proposed_behavior": {"migration_in_this_work_package": false},
+      "governance_pending": {"questions": ["Can the copied provider order and credential precedence be represented without semantic loss?"]},
+      "current_path": "consumer_owned_registry_clients_retry_and_fallback",
+      "ai_core_pin": "none",
+      "capability_requirements": [
+        {"capability": "TEXT_AND_STRUCTURED_JSON", "evidence_scope": "execution_path", "evidence_level": "unit_tested"},
+        {"capability": "IMAGE_DESCRIPTION", "evidence_scope": "execution_path", "evidence_level": "configured"}
+      ],
+      "retry": {
+        "provider_call": {"owner": "consumer", "status": "observed"},
+        "provider_fallback": {"owner": "consumer", "status": "observed"},
+        "durable_job": {"owner": "consumer", "max_attempts": null}
+      },
+      "fallback_owner": "consumer",
+      "privacy": {"status": "no_enforceable_chat_egress_classifier_observed"},
+      "tracing": {"status": "consumer_owned"},
+      "rollback": {"old_path": "existing KMO AI modules", "activation": "no_change_required"},
+      "gaps": ["copied registry aliases remain product-specific", "outbound privacy classification is not proven"],
+      "risk": "very_high",
+      "representable": "partial"
+    },
+    "zoom": {
+      "provenance": {
+        "repository": "zoom-in-plan",
+        "sha": "90f0665f665bd8434b60df7563107c7488c33c44",
+        "ref": "tracked_checkout",
+        "role": "consumer",
+        "authority": "tracked_checkout",
+        "paths": ["backend/pyproject.toml"]
+      },
+      "observed_evidence": {
+        "status": "observed_checkout",
+        "facts": [
+          {"kind": "contains", "path": "backend/pyproject.toml", "match": "ai-core.git@v0.1.0"},
+          {"kind": "contains", "path": "backend/pyproject.toml", "match": "langchain-ollama==1.1.0"}
+        ]
+      },
+      "consumer_requirement": {"exact_v01_tracing_imports": true, "single_consumer_failover_loop": true},
+      "accepted_platform_contract": {"tracing_compatibility_required": true, "nested_fallback_forbidden": true},
+      "proposed_behavior": {"migration_in_this_work_package": false},
+      "governance_pending": {"questions": ["Who owns fallback after any future adapter migration?"]},
+      "current_path": "raw_ollama_default_with_langchain_adapter",
+      "ai_core_pin": "v0.1.0",
+      "capability_requirements": [
+        {"capability": "TEXT_AND_STRUCTURED_JSON", "evidence_scope": "execution_path", "evidence_level": "unit_tested"}
+      ],
+      "retry": {
+        "provider_call": {"owner": "consumer", "status": "per_attempt_timeout"},
+        "provider_fallback": {"owner": "consumer", "status": "one_loop"},
+        "durable_job": {"owner": "consumer", "max_attempts": null}
+      },
+      "fallback_owner": "consumer",
+      "privacy": {"status": "central_egress_classification_not_observed"},
+      "tracing": {"status": "ai_core_v01"},
+      "rollback": {"old_path": "AI_RUNTIME_ADAPTER=raw", "activation": "configuration_switch"},
+      "gaps": ["future fallback owner is undecided"],
+      "risk": "high",
+      "representable": "partial"
+    },
+    "clin_rec": {
+      "provenance": {
+        "repository": "Clin-rec",
+        "sha": "950a21c60dd353f69bc3a7e067bc5a4820df6462",
+        "ref": "tracked_checkout",
+        "role": "consumer",
+        "authority": "tracked_checkout",
+        "paths": ["pyproject.toml"]
+      },
+      "observed_evidence": {
+        "status": "observed_checkout",
+        "facts": [
+          {"kind": "contains", "path": "pyproject.toml", "match": "langchain>=0.3,<1"},
+          {"kind": "not_contains", "path": "pyproject.toml", "match": "ai-core @"}
+        ]
+      },
+      "consumer_requirement": {"consumer_owned_provider_order": true, "domain_validation_owner": "consumer"},
+      "accepted_platform_contract": {"ai_core_installation_required": false, "nested_fallback_forbidden": true},
+      "proposed_behavior": {"migration_in_this_work_package": false},
+      "governance_pending": {"questions": ["Can a dependency-light future contract avoid the current LangChain major-version conflict?"]},
+      "current_path": "consumer_owned_langchain_factory_and_fallback",
+      "ai_core_pin": "none",
+      "capability_requirements": [
+        {"capability": "TEXT_AND_STRUCTURED_CLINICAL_OUTPUT", "evidence_scope": "execution_path", "evidence_level": "unit_tested"}
+      ],
+      "retry": {
+        "provider_call": {"owner": "consumer", "status": "observed"},
+        "provider_fallback": {"owner": "consumer", "status": "timeout_429_5xx"},
+        "durable_job": {"owner": "consumer", "max_attempts": null}
+      },
+      "fallback_owner": "consumer",
+      "privacy": {"status": "central_policy_not_observed"},
+      "tracing": {"status": "local_phoenix"},
+      "rollback": {"old_path": "local LangChain runtime", "activation": "no_change_required"},
+      "gaps": ["historical ai-core v0.2 dependency family conflicts with consumer constraints"],
+      "risk": "high",
+      "representable": "partial"
+    },
+    "landing_sell": {
+      "provenance": {
+        "repository": "02_landing_sell",
+        "sha": "5645cd84aee903d547cf5c9e96cb9eef81166382",
+        "ref": "docs/operator-site-generation-workflow",
+        "role": "compatibility_matrix_exception_consumer",
+        "authority": "tracked_checkout",
+        "paths": ["pyproject.toml"]
+      },
+      "observed_evidence": {
+        "status": "observed_checkout",
+        "facts": [
+          {"kind": "contains", "path": "pyproject.toml", "match": "ai-core.git@v0.2.1"}
+        ]
+      },
+      "consumer_requirement": {"privacy_envelope_fail_closed": true, "deterministic_product_fallback": true},
+      "accepted_platform_contract": {"matrix_exception": true, "nested_fallback_forbidden": true},
+      "proposed_behavior": {"migration_in_this_work_package": false},
+      "governance_pending": {"questions": ["How will v0.2.1 privacy behavior coexist with the stricter all-form SECRET rule?"]},
+      "current_path": "privacy_envelope_to_v021_gateway",
+      "ai_core_pin": "v0.2.1",
+      "capability_requirements": [
+        {"capability": "TEXT_AND_STRUCTURED_JSON", "evidence_scope": "execution_path", "evidence_level": "unit_tested"}
+      ],
+      "retry": {
+        "provider_call": {"owner": "ai_core_v02_client", "status": "per_provider_retry_disabled"},
+        "provider_fallback": {"owner": "ai_core_v02_client", "status": "observed"},
+        "durable_job": {"owner": "consumer", "max_attempts": null}
+      },
+      "fallback_owner": "ai_core_v02_client",
+      "privacy": {"status": "explicit_raw_sanitized_synthetic_envelope"},
+      "tracing": {"status": "ai_core_v021"},
+      "rollback": {"old_path": "pinned v0.2.1 gateway", "activation": "package_pin"},
+      "gaps": ["v0.2.1 permits sanitized or surrogated SECRET in conditions forbidden by target invariant"],
+      "risk": "high",
+      "representable": "partial"
+    },
+    "agent_lab": {
+      "provenance": {
+        "repository": "agent-lab",
+        "sha": "c87b3e987f70323355b78ec16858acabe8ef260e",
+        "ref": "main",
+        "role": "consumer",
+        "authority": "tracked_checkout",
+        "paths": ["pyproject.toml"]
+      },
+      "observed_evidence": {
+        "status": "observed_checkout",
+        "facts": [
+          {"kind": "contains", "path": "pyproject.toml", "match": "ai-core.git@v0.2.1"}
+        ]
+      },
+      "consumer_requirement": {"logical_aliases_remain_product_owned": true, "ai_core_unavailable_behavior_preserved": true},
+      "accepted_platform_contract": {"provider_ids_limited_to_allowlist": true, "nested_fallback_forbidden": true},
+      "proposed_behavior": {"migration_in_this_work_package": false},
+      "governance_pending": {"questions": ["How are model aliases tested without promoting them to provider identities?"]},
+      "current_path": "v021_adapter_with_product_model_aliases",
+      "ai_core_pin": "v0.2.1",
+      "capability_requirements": [
+        {"capability": "TEXT_AND_STRUCTURED_JSON", "evidence_scope": "execution_path", "evidence_level": "unit_tested"},
+        {"capability": "VISION_IMAGE", "evidence_scope": "model", "evidence_level": "configured"}
+      ],
+      "retry": {
+        "provider_call": {"owner": "ai_core_v02_client", "status": "observed"},
+        "provider_fallback": {"owner": "ai_core_v02_client", "status": "observed"},
+        "durable_job": {"owner": "consumer", "max_attempts": null}
+      },
+      "fallback_owner": "ai_core_v02_client",
+      "privacy": {"status": "internal_metadata_oriented"},
+      "tracing": {"status": "ai_core_v021_or_local_standin"},
+      "rollback": {"old_path": "local stand-ins when ai-core import fails", "activation": "package_pin"},
+      "gaps": ["local stand-ins can mask package incompatibility", "configured vision model is not accepted capability evidence"],
+      "risk": "medium_high",
+      "representable": "partial"
+    },
+    "alpha_university": {
+      "provenance": {
+        "repository": "alpha-university",
+        "sha": "7216b379518cd4d5e934daeb50bdd5a6cb503d8a",
+        "ref": "origin/main",
+        "role": "ai_adjacent_reference",
+        "authority": "origin_main",
+        "paths": ["pyproject.toml"]
+      },
+      "observed_evidence": {
+        "status": "default_branch_evidence",
+        "facts": [
+          {"kind": "not_contains", "path": "pyproject.toml", "match": "ai-core"},
+          {"kind": "not_contains", "path": "pyproject.toml", "match": "langchain"}
+        ]
+      },
+      "consumer_requirement": {"planner_remains_ai_independent": true, "ocr_shadow_noncanonical": true},
+      "accepted_platform_contract": {"runtime_status": "no_ai_runtime", "narrow_boundary": true},
+      "proposed_behavior": {"migration_in_this_work_package": false},
+      "governance_pending": {"questions": ["Any future AI shadow requires a separate accepted work package and zero false-supported results."]},
+      "current_path": "deterministic_planner_and_tesseract_ocr_shadow",
+      "ai_core_pin": "none",
+      "capability_requirements": [
+        {"capability": "DETERMINISTIC_OCR_SHADOW", "evidence_scope": "execution_path", "evidence_level": "unit_tested"}
+      ],
+      "retry": {
+        "provider_call": {"owner": "none", "status": "not_applicable"},
+        "provider_fallback": {"owner": "none", "status": "not_applicable"},
+        "durable_job": {"owner": "consumer", "max_attempts": null}
+      },
+      "fallback_owner": "none",
+      "privacy": {"status": "no_cloud_current_path"},
+      "tracing": {"status": "narrow_boundary_only"},
+      "rollback": {"old_path": "deterministic planner and OCR shadow", "activation": "no_change_required"},
+      "gaps": [],
+      "risk": "low_current",
+      "representable": "yes"
+    },
+    "transcription_service": {
+      "provenance": {
+        "repository": "transcription-service",
+        "sha": "067a0f2b9441837a4f1897f19de8707992161128",
+        "ref": "origin/main",
+        "role": "http_contract_consumer",
+        "authority": "origin_main",
+        "paths": ["app/providers/ai_core.py", "app/config.py"]
+      },
+      "observed_evidence": {
+        "status": "default_branch_client_only",
+        "facts": [
+          {"kind": "contains", "path": "app/providers/ai_core.py", "match": "_STT_PATH = \"/internal/ai/v1/transcriptions\""},
+          {"kind": "contains", "path": "app/providers/ai_core.py", "match": "X-Prozakupki-AI-Key"},
+          {"kind": "contains", "path": "app/config.py", "match": "provider: Literal[\"fake\", \"ai_core\"] = \"fake\""},
+          {"kind": "contains", "path": "app/config.py", "match": "max_attempts: int = Field(default=3"}
+        ]
+      },
+      "consumer_requirement": {
+        "http_contract": {
+          "endpoint": "/internal/ai/v1/transcriptions",
+          "header_name": "X-Prozakupki-AI-Key",
+          "contract_version": 1,
+          "client_timeout_seconds": 150,
+          "retryable_status": [429, 500, 502, 503, 504],
+          "terminal_status": [400, 401, 403, 413, 415, 422],
+          "raw_body_logging": "forbidden"
+        }
+      },
+      "accepted_platform_contract": {"STT_SEGMENTS": "unaccepted", "service_runtime": "not_authorized"},
+      "proposed_behavior": {"canonical_server_exists": false, "migration_in_this_work_package": false},
+      "governance_pending": {"questions": ["Will STT_SEGMENTS and a matching authenticated server contract be accepted?"]},
+      "current_path": "fake_default_optional_ai_core_http_client",
+      "ai_core_pin": "none_http_only",
+      "capability_requirements": [
+        {"capability": "STT_SEGMENTS", "evidence_scope": "execution_path", "evidence_level": "configured"}
+      ],
+      "retry": {
+        "provider_call": {"owner": "unknown_future_server", "status": "not_implemented"},
+        "provider_fallback": {"owner": "unknown_future_server", "status": "not_implemented"},
+        "durable_job": {"owner": "consumer", "max_attempts": 3}
+      },
+      "fallback_owner": "none",
+      "privacy": {"status": "service_auth_and_no_raw_response_body_logging"},
+      "tracing": {"status": "server_contract_absent"},
+      "rollback": {"old_path": "provider=fake", "activation": "configuration_switch"},
+      "gaps": ["no matching ai-core server", "STT_SEGMENTS is not accepted", "service auth and deployment ownership unresolved"],
+      "risk": "high_blocking",
+      "representable": "blocked"
+    },
+    "image_description_service": {
+      "provenance": {
+        "repository": "image-description-service",
+        "sha": "0d6b795af88d09ffd6991679079d1a8377b5d6e8",
+        "ref": "origin/main",
+        "role": "http_contract_consumer",
+        "authority": "origin_main",
+        "paths": ["app/providers/ai_core.py", "app/config.py"]
+      },
+      "observed_evidence": {
+        "status": "default_branch_client_only",
+        "facts": [
+          {"kind": "contains", "path": "app/providers/ai_core.py", "match": "_IMAGE_DESCRIPTION_PATH = \"/internal/ai/v1/image-descriptions\""},
+          {"kind": "contains", "path": "app/providers/ai_core.py", "match": "X-Prozakupki-AI-Key"},
+          {"kind": "contains", "path": "app/config.py", "match": "provider: Literal[\"fake\", \"ai_core\"] = \"fake\""},
+          {"kind": "contains", "path": "app/config.py", "match": "max_attempts: int = Field(default=3"}
+        ]
+      },
+      "consumer_requirement": {
+        "http_contract": {
+          "endpoint": "/internal/ai/v1/image-descriptions",
+          "header_name": "X-Prozakupki-AI-Key",
+          "contract_version": 1,
+          "client_timeout_seconds": 150,
+          "retryable_status": [429, 500, 502, 503, 504],
+          "terminal_status": [400, 401, 403, 413, 415, 422],
+          "raw_body_logging": "forbidden"
+        }
+      },
+      "accepted_platform_contract": {"VISION_IMAGE": "not_accepted_for_service_runtime", "service_runtime": "not_authorized"},
+      "proposed_behavior": {"canonical_server_exists": false, "migration_in_this_work_package": false},
+      "governance_pending": {"questions": ["Will a matching authenticated image-description server and capability evidence be accepted?"]},
+      "current_path": "fake_default_optional_ai_core_http_client",
+      "ai_core_pin": "none_http_only",
+      "capability_requirements": [
+        {"capability": "VISION_IMAGE", "evidence_scope": "execution_path", "evidence_level": "configured"}
+      ],
+      "retry": {
+        "provider_call": {"owner": "unknown_future_server", "status": "not_implemented"},
+        "provider_fallback": {"owner": "unknown_future_server", "status": "not_implemented"},
+        "durable_job": {"owner": "consumer", "max_attempts": 3}
+      },
+      "fallback_owner": "none",
+      "privacy": {"status": "service_auth_and_no_raw_response_body_logging"},
+      "tracing": {"status": "server_contract_absent"},
+      "rollback": {"old_path": "provider=fake", "activation": "configuration_switch"},
+      "gaps": ["no matching ai-core server", "service auth deployment and egress ownership unresolved"],
+      "risk": "high_blocking",
+      "representable": "blocked"
+    }
+  }
+}
