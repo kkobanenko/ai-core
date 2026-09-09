@@ -16,5 +16,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Enforce characterization-only paths
+        if: github.event_name == 'pull_request' && github.head_ref == 'test/ai-core-compatibility-characterization-20260909'
+        run: >-
+          python scripts/check_characterization_changed_paths.py
+          --base ${{ github.event.pull_request.base.sha }}
+          --head ${{ github.event.pull_request.head.sha }}
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest -q
