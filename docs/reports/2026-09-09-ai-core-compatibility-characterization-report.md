@@ -422,6 +422,20 @@ The metadata-only delivery commit is revalidated once more before push. Suite
 runs emitted one pre-existing `pytest-asyncio` deprecation warning about unset
 `asyncio_default_fixture_loop_scope`; it did not change counts or outcomes.
 
+Published content-head validation after the base-to-HEAD whitespace correction:
+
+```text
+content head: b0b3607bb64f410497182b089f708feff8936061
+PYTHONPATH=src python3.10 -m pytest -q
+101 passed in 1.79s
+consumer verifier: verified 9 pinned consumer contracts
+changed-path guard: verified 38 characterization-only changed paths
+git diff --check BASE...HEAD: PASS
+```
+
+The final bridge-metadata commit is intentionally identified externally in the
+delivery response, avoiding a recursive self-SHA update.
+
 Additional checks:
 
 - fixture scan found no credential-shaped value or URL with userinfo/query
@@ -602,7 +616,8 @@ be considered. Runtime/transports/service remain later work packages.
 **Production base:** `7569441c18362cfd15524ad73f56f7f35580c86f`
 
 **Pre-report content head:** `744eed0659aa8e98fb4a37c35692c96831ec7023`
-**Closeout content head:** `5a89e0973cf4b5cd558a0ee7f4f3c577424898f2`
+**Published and validated content head:**
+`b0b3607bb64f410497182b089f708feff8936061`
 **Final delivery head:** resolve with `git rev-parse HEAD`; the delivery
 response records it under the pre-final/final-SHA convention.
 **Worktree:** `/home/kok4444/projects/ai-core/.worktrees/compatibility-characterization-20260909`

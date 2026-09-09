@@ -5,14 +5,15 @@
 **Branch:** `test/ai-core-compatibility-characterization-20260909`
 
 **Production base:** `7569441c18362cfd15524ad73f56f7f35580c86f`
-**Closeout content head:** `5a89e0973cf4b5cd558a0ee7f4f3c577424898f2`
+**Published and validated content head:**
+`b0b3607bb64f410497182b089f708feff8936061`
 **Final delivery head:** resolve with `git rev-parse HEAD`; the delivery
 response records it. This pre-final/final convention avoids the impossible
 self-reference of storing a commit's own SHA inside that commit.
 
 ## Validation status
 
-- `PYTHONPATH=src python3.10 -m pytest -q` — **101 passed in 1.81s**;
+- `PYTHONPATH=src python3.10 -m pytest -q` — **101 passed in 1.79s**;
 - consumer fixture verifier — **9 pinned contracts verified**;
 - changed-path guard at closeout content head — **38 documentation/test-only
   paths verified** against production base;
