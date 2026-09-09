@@ -71,9 +71,17 @@ approved with model, privacy, ownership, and service evidence.
 ### D4. Routing, health, order, and fallback ownership
 
 Define route-order authority, `UNKNOWN` health eligibility, deterministic
-exhaustion, and single fallback owner. Recommended posture: caller supplies an
-explicit policy-constrained candidate set; unknown or missing safety inputs do
-not silently enable egress; one future layer owns retry/fallback.
+exhaustion, and retry ownership. Treat three mechanisms independently:
+
+- provider-call retry repeats one provider call;
+- provider fallback selects another eligible provider;
+- durable job/workflow retry reruns consumer workflow state.
+
+Recommended posture: caller supplies an explicit policy-constrained candidate
+set; unknown or missing safety inputs do not silently enable egress; one future
+AI Core execution layer may own provider-call retry and provider fallback
+orchestration, while durable job/workflow retry remains consumer-owned. No
+single retry contract combines all three mechanisms.
 
 ### D5. Error taxonomy and shared deadline
 
@@ -83,9 +91,17 @@ network execution.
 
 ### D6. GPU and service ownership boundary
 
-Decide ownership and trust boundary for GPU endpoints, AI Core service, auth,
-deployment, health evidence, and STT. Current HTTP 503 remains reachability
-evidence only, not confirmed vision runtime capability.
+Keep one compact packet with two independently approved subdecisions:
+
+- **D6a:** GPU trust and network boundary;
+- **D6b:** AI Core HTTP service ownership, authentication, and deployment
+  boundary.
+
+D6a approval does not authorize service/runtime work. D6b approval does not
+accept STT, new provider identities, or GPU trust. Endpoint normalization and
+reachability are confirmed. GPU vision HTTP 503 is a failed/inconclusive
+runtime-validation attempt, not runtime capability evidence, and cannot raise
+the model evidence level.
 
 All six packets remain `OPEN` until platform-control or named decision authority
 records approval outside this package.
