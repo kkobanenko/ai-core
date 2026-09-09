@@ -1,63 +1,102 @@
 # Latest agent report
 
-**Work package:** AI Core compatibility characterization closeout
+**Work package:** AI Core governance decision support and PR decomposition
+**Status:** COMPLETE / WAITING FOR OPERATOR REVIEW
+**Date:** 2026-09-09
 
-**Branch:** `test/ai-core-compatibility-characterization-20260909`
+## Git state
 
-**Production base:** `7569441c18362cfd15524ad73f56f7f35580c86f`
-**Published and validated content head:**
-`b0b3607bb64f410497182b089f708feff8936061`
-**Final delivery head:** resolve with `git rev-parse HEAD`; the delivery
-response records it. This pre-final/final convention avoids the impossible
-self-reference of storing a commit's own SHA inside that commit.
+- Branch: `test/ai-core-compatibility-characterization-20260909`
+- Production main: `7569441c18362cfd15524ad73f56f7f35580c86f`
+- Characterization delivery head: `f718034484b8b2af93d78ccdc7d5a240b7a6459e`
+- Governance package design head: `2cd42b43a56b17a036740c1abaeed22ad0087b82`
+- Published/validated governance content head:
+  `b85c3fc4ef9d2eb139a5a2cd106ef6233ef7ddf9`
+- Final bridge metadata head: resolve with `git rev-parse HEAD`; delivery response
+  records it to avoid recursive self-SHA.
+- Platform-control main observed read-only:
+  `6445a2ed8614ae0bb663b92413ebf04f3fbc1d99`
 
-## Validation status
+Production source, consumers, platform-control, PR #3-#5, tags, releases, and
+deployment were not changed.
 
-- `PYTHONPATH=src python3.10 -m pytest -q` — **101 passed in 1.79s**;
-- consumer fixture verifier — **9 pinned contracts verified**;
-- changed-path guard at closeout content head — **38 documentation/test-only
-  paths verified** against production base;
+## Authoritative artifacts
+
+- Decision packets:
+  `docs/governance/2026-09-09-ai-core-decision-packets.md`
+- PR paper decomposition:
+  `docs/governance/2026-09-09-ai-core-pr-decomposition-plan.md`
+- Design:
+  `docs/superpowers/specs/2026-09-09-ai-core-governance-decision-support-design.md`
+- Execution plan:
+  `docs/superpowers/plans/2026-09-09-ai-core-governance-decision-support.md`
+- Archived handoff:
+  `docs/agent-bridge/reports/2026-09-09-ai-core-governance-decision-support.md`
+
+## Decision summary
+
+Every item remains `OPEN`. Recommendations are support, not decisions.
+
+- **D1:** allow only additive, submodule-only, dependency-light foundation after
+  platform-control records correct main and authorizes it; root API unchanged.
+- **D2:** `SECRET` denied for every form/boundary before routing; missing
+  request-level egress permission fails closed.
+- **D3:** keep four accepted provider IDs; separate identity from exact
+  model/capability/boundary evidence; defer new IDs and `STT_SEGMENTS`.
+- **D4:** preserve explicit caller order; `UNKNOWN` health is ineligible by
+  default. Future AI Core execution may own provider-call retry and provider
+  fallback; consumer owns durable job/workflow retry.
+- **D5:** use explicit policy/capability/auth/rate/transport/provider/schema/
+  deadline taxonomy and one monotonic end-to-end deadline.
+- **D6a:** retain GPU `UNKNOWN_BOUNDARY`. Normalization/reachability passed; GPU
+  vision HTTP 503 is failed/inconclusive, not runtime capability evidence.
+- **D6b:** keep HTTP service outside foundation. A later service-contract design
+  needs independent approval; it does not accept STT, new identities, or GPU
+  trust.
+
+## PR #3-#5 paper disposition
+
+- **PR #3:** root compatibility and dependency-light types are candidates;
+  transformed SECRET and catalog-only egress authority are reject/redesign.
+- **PR #4:** accepted-ID alias mechanics may be isolated; two-level evidence,
+  new identities, and STT are split/redesign/deferred.
+- **PR #5:** pure deadline math and data shapes may be isolated; implicit
+  allow-all, global priority override, and default-healthy UNKNOWN are
+  reject/redesign; executor/transports remain runtime-deferred.
+
+No PR branch, metadata, base, or history was changed. No draft review PR was
+created because approved package design authorizes docs and current-branch push
+only.
+
+## Refreshed governance evidence
+
+- Platform-control issues #291-#293: OPEN; zero comments; no approval.
+- PR #3-#5: OPEN, DRAFT, CI-green, no approving review; pinned heads unchanged.
+- Governance observed-state drift remains: compatibility observed pointer is
+  `83acc530...`, while factual AI Core main and current-initiative pointer are
+  `7569441...`.
+- Platform-control still marks AI Core v0.3 `rfc_only`, runtime unauthorized,
+  with explicit implementation prohibition.
+
+## Validation at content head
+
+- `env PYTHONPATH=src python3.10 -m pytest -q` — 101 passed in 1.47s;
+- consumer verifier — 9 pinned contracts verified;
+- changed-path guard — 43 characterization-only paths verified against
+  production main;
 - `git diff --check` — PASS;
-- production `src/`, dependency manifests, configs, consumers,
-  platform-control, PRs, releases, tags, and `main` — unchanged by this WP.
+- production path diff (`src`, `pyproject.toml`, `config`) — empty;
+- one existing `pytest-asyncio` unset-loop-scope deprecation warning remains.
 
-## Main findings
+## Blockers and next action
 
-- Current `main` remains a dependency-light tracing-only nine-symbol contract.
-- Immutable v0.2 tags are separate historical evidence, not a drop-in main
-  replacement; `v0.2.2` has no `invoke_text` or `STT_SEGMENTS`.
-- Nine consumer infrastructure contracts are pinned by exact SHA without
-  importing or changing consumer code.
-- `SECRET` requires zero eligible routes and zero provider attempts for every
-  form/boundary; PR #3 currently conflicts for sanitized/surrogated forms.
-- PR #3–#5 are OPEN/DRAFT/CI-green but not merge-authorized.
-- Platform-control issues #291–#293 are OPEN review-only records with no
-  approval.
-- Governance has an observed-state drift: it records `83acc530...` for
-  ai-core main while factual main is `7569441...`.
-- GitHub branch protection is not enforced on `ai-core/main`; this is an
-  operational risk, not a work-package blocker.
+Blockers: D1-D6 OPEN; platform-control pointer drift; issues #291-#293 contain no
+approval; runtime/service/identity/STT/GPU decisions absent.
 
-## PR disposition summary
+Recommended next package: operator/platform-control records decisions in order
+D1 pointer/foundation, D2 privacy, D3 identity/evidence, D4-D5 routing/deadline,
+then D6a/D6b independently. This repository must remain stopped until those
+records or a new explicit scope exist.
 
-- **PR #3:** keep dependency-light/root-compatible pieces; redesign all-form
-  SECRET behavior; fix provider-level capability evidence; governance review
-  required.
-- **PR #4:** retain only corrected alias/evidence machinery for the accepted
-  four IDs; split new identities and `STT_SEGMENTS` into later governed work.
-- **PR #5:** keep deadline arithmetic; decide taxonomy, UNKNOWN health, order,
-  and explicit egress; redesign inherited SECRET/default egress; defer
-  executor/transports.
-
-## Blockers and next package
-
-Runtime implementation remains unauthorized. Privacy, identity/capability,
-GPU boundary, route order, health, egress, error taxonomy, deadline, service
-ownership, STT, and fallback-owner decisions remain open.
-
-Recommended next work package: an explicitly authorized platform-control
-governance-resolution and draft-stack decomposition package. Do not start it
-until `next-prompt.md` is replaced by a new user/ChatGPT instruction.
-
-Full report:
-`docs/reports/2026-09-09-ai-core-compatibility-characterization-report.md`.
+Rollback: revert governance-package documentation commits or delete this review
+branch. Production main and external repositories require no rollback.
