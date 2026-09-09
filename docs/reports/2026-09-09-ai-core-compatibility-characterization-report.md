@@ -397,8 +397,27 @@ git diff --check
 PASS
 ```
 
-The changed-path guard will be rerun at final HEAD. Both suite runs emitted one
-pre-existing `pytest-asyncio` deprecation warning about unset
+Closeout validation after the bridge and evidence updates were added:
+
+```text
+PYTHONPATH=src python3.10 -m pytest -q
+101 passed in 1.81s
+
+python3.10 scripts/verify_consumer_contract_fixtures.py \
+  --workspace-root /home/kok4444/projects
+verified 9 pinned consumer contracts
+
+python3.10 scripts/check_characterization_changed_paths.py \
+  --base 7569441c18362cfd15524ad73f56f7f35580c86f \
+  --head 5a89e0973cf4b5cd558a0ee7f4f3c577424898f2
+verified 38 characterization-only changed paths
+
+git diff --check
+PASS
+```
+
+The metadata-only delivery commit is revalidated once more before push. Suite
+runs emitted one pre-existing `pytest-asyncio` deprecation warning about unset
 `asyncio_default_fixture_loop_scope`; it did not change counts or outcomes.
 
 Additional checks:
@@ -417,7 +436,12 @@ Additional checks:
 - fresh GitHub issue queries confirmed platform-control #291, #292, and #293
   are OPEN review requests with no comments, labels, or approval record; each
   explicitly says it does not authorize merge or resolve a pending decision;
-- primary checkout state and user-owned untracked paths remain unchanged.
+- GitHub returned `Branch not protected` for `ai-core/main`;
+- the primary checkout remains exactly
+  `main@7569441c18362cfd15524ad73f56f7f35580c86f`; user-owned untracked
+  `.worktrees/`, `docs/tmp/`, and `uv.lock` remain present and untouched;
+- consumer and platform-control status checks were read-only; their unrelated,
+  pre-existing local branches/untracked changes were preserved.
 
 ## 13. Open questions / governance decisions
 
@@ -574,7 +598,9 @@ be considered. Runtime/transports/service remain later work packages.
 **Branch:** `test/ai-core-compatibility-characterization-20260909`  
 **Production base:** `7569441c18362cfd15524ad73f56f7f35580c86f`  
 **Pre-report content head:** `744eed0659aa8e98fb4a37c35692c96831ec7023`  
-**Final head:** resolve with `git rev-parse HEAD` after the report commit.  
+**Closeout content head:** `5a89e0973cf4b5cd558a0ee7f4f3c577424898f2`
+**Final delivery head:** resolve with `git rev-parse HEAD`; the delivery
+response records it under the pre-final/final-SHA convention.
 **Worktree:** `/home/kok4444/projects/ai-core/.worktrees/compatibility-characterization-20260909`
 
 Changed artifacts:
@@ -583,13 +609,14 @@ Changed artifacts:
 - four fixtures under `tests/fixtures/compatibility/`;
 - read-only consumer verifier and changed-path guard under `scripts/`;
 - branch-scoped CI history/guard configuration;
-- approved baseline/design/plan documents and this report.
+- approved baseline/design/plan documents and this report;
+- persistent coordination artifacts under `docs/agent-bridge/`.
 
 Tests/checks:
 
 - full suite twice: `101 passed`, same count/outcome;
 - nine pinned consumer contracts verified;
-- characterization-only changed paths verified;
+- 38 characterization-only changed paths verified at closeout content head;
 - `git diff --check` passed;
 - credential/content/network scans produced no unsafe matches;
 - PR and governance state refreshed read-only.

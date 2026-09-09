@@ -3,14 +3,20 @@
 **Work package:** AI Core compatibility characterization closeout  
 **Branch:** `test/ai-core-compatibility-characterization-20260909`  
 **Production base:** `7569441c18362cfd15524ad73f56f7f35580c86f`  
-**Content head before bridge closeout:** `a116547cad50376399e0cf6091dcbedf114d0443`  
-**Delivery head:** recorded after the closeout commit using the
-pre-final/final-SHA convention, because a commit cannot contain its own SHA.
+**Closeout content head:** `5a89e0973cf4b5cd558a0ee7f4f3c577424898f2`
+**Final delivery head:** resolve with `git rev-parse HEAD`; the delivery
+response records it. This pre-final/final convention avoids the impossible
+self-reference of storing a commit's own SHA inside that commit.
 
 ## Validation status
 
-Final validation is intentionally rerun after all bridge/report content is in
-place. The closeout commit records the actual results before publication.
+- `PYTHONPATH=src python3.10 -m pytest -q` — **101 passed in 1.81s**;
+- consumer fixture verifier — **9 pinned contracts verified**;
+- changed-path guard at closeout content head — **38 documentation/test-only
+  paths verified** against production base;
+- `git diff --check` — PASS;
+- production `src/`, dependency manifests, configs, consumers,
+  platform-control, PRs, releases, tags, and `main` — unchanged by this WP.
 
 ## Main findings
 
