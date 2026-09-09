@@ -190,6 +190,36 @@ dependency-light contract. The v0.2 roots, hard dependency bundle,
 provider-level truth assumptions, and historical privacy rule must not be
 copied directly.
 
+### Non-main branch disposition
+
+Remote branch tips were checked against exact Git objects on 2026-09-09:
+
+| Branch | Tip / relation | Disposition |
+|---|---|---|
+| `ai-core-task2-tracing` | `e479d0a`, exactly the peeled `v0.2.0` commit | historical pointer only; immutable tag is the stronger contract source |
+| `feat/provider-catalog-privacy-routing` | `679b88f`, exactly the peeled `v0.2.2` commit | historical pointer only; immutable tag is authoritative |
+| `spike/au01b-multimodal-ocr-primitives` | `adf856e`, source/pre-merge head of merged PR #2 | PR provenance only; merged `v0.2.2` tag is the release contract source |
+| `chore/validate-ai-core-v0.1-v0.2` | `3373a00`, ancestor of current `main` | already integrated validation/history; no separate compatibility contract |
+| `chore/platform-control-phase1` | `076333e`, dated 2026-07-20 and not an ancestor of current `main` | stale/non-authoritative coordination branch |
+
+No separate contract was created for a branch already represented by an
+immutable tag.
+
+### Historical PR #2 capability evidence levels
+
+Evidence must not be collapsed into a single `supported` flag:
+
+| Evidence level | Verified fact |
+|---|---|
+| Declared/configured | `v0.2.2` declares model-scoped `TEXT`, `STRUCTURED_JSON`, `VISION_IMAGE`, and `OCR_PDF` profiles |
+| Unit-tested | PR #2 reports 85 mocked-HTTP unit tests; GitHub CI passed on Python 3.10 and 3.12 at the pre-merge head |
+| Runtime-validated | Mistral OCR live validation was GREEN; Ollama endpoint normalization and reachability were validated |
+| Not runtime-validated | GPU vision inference returned HTTP 503, so live vision inference was not confirmed |
+
+The 503 is negative evidence about that validation attempt, not proof that the
+configured model capability is absent and not permission to call it
+runtime-proven.
+
 ## 5. Consumer compatibility matrix
 
 The portable fixture contains infrastructure facts only. Provider/model names
@@ -384,8 +414,9 @@ Additional checks:
   branch copies have matching SHA-256 digests;
 - fresh GitHub queries on 2026-09-09 confirmed PR #3–#5 heads/state/checks and
   empty review lists;
-- fresh GitHub queries could not resolve platform-control PR #291, #292, or
-  #293; these are absent/unverifiable, not approvals;
+- fresh GitHub issue queries confirmed platform-control #291, #292, and #293
+  are OPEN review requests with no comments, labels, or approval record; each
+  explicitly says it does not authorize merge or resolve a pending decision;
 - primary checkout state and user-owned untracked paths remain unchanged.
 
 ## 13. Open questions / governance decisions
@@ -428,6 +459,17 @@ Current platform-control evidence remains
 explicit `ai_core_v0_3_implementation` prohibition. No pending decision was
 resolved here.
 
+There is also **GOVERNANCE OBSERVED-STATE DRIFT**: factual GitHub/main is
+`7569441c18362cfd15524ad73f56f7f35580c86f`, while
+`platform-control/config/compatibility.yaml@origin/main` still records
+`ai_core_main_sha: 83acc5304bd87451a0dc96d7a3b0ca663ec6769f` as an observed pointer.
+The exact ai-core Git object is authoritative for current-source
+characterization. This package does not repair platform-control.
+
+Platform-control issues #291 (C2), #292 (C3), and #293 (foundation) are now
+verified as OPEN review gates, but their empty comments/labels and explicit
+review-only wording provide no approval. PR #3–#5 remain not merge-authorized.
+
 ## 14. Risks
 
 - **Root/API:** merging a v0.2 line wholesale breaks v0.1 tracing imports.
@@ -450,6 +492,10 @@ resolved here.
   authority fields are ignored.
 - **Operations:** provider credentials, service auth, deployment owner, and
   infrastructure locks remain unresolved.
+- **Repository controls:** GitHub reports `ai-core/main` as not protected; no
+  required status checks are enforced. This is an operational risk, not a
+  blocker manufactured by this characterization package, and no protection
+  setting was changed here.
 
 ## 15. Recommended target architecture refinements
 
@@ -510,6 +556,8 @@ production runtime/provider/service code or any consumer.
 Exit criteria:
 
 - platform-control contains resolvable review/decision evidence;
+- governance observed-state drift is corrected or explicitly accepted by the
+  platform-control owner;
 - permitted provider IDs and capabilities are machine-readable and unchanged
   unless separately approved;
 - every PR logical block has an approved destination;
@@ -549,7 +597,7 @@ Tests/checks:
 Remaining blockers:
 
 - v0.3 implementation remains unauthorized;
-- no verifiable platform-control review exists for PR #3–#5;
+- platform-control review issues #291–#293 exist but contain no approval;
 - SECRET, capability evidence, GPU boundary, route order, UNKNOWN health,
   explicit egress, error taxonomy, deadline enforcement, service ownership,
   identities, and STT decisions remain open as listed in section 13.
