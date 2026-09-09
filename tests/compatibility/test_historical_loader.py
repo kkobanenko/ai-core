@@ -116,12 +116,14 @@ def test_v020_exhaustion_attempts_each_ready_provider_once() -> None:
         }
     )
 
-    with pytest.raises(RuntimeError, match="second"):
+    with pytest.raises(RuntimeError, match="second") as raised:
         client_type((_provider(harness, "one"), _provider(harness, "two"))).create_json_completion(
             "system", "user"
         )
 
     assert harness.build_names == ["one", "two"]
+    assert raised.value.__class__.__name__ == "ProviderTransportError"
+    assert not hasattr(raised.value, "attempt_summary")
 
 
 def test_v020_returns_raw_content_without_json_schema_validation() -> None:
