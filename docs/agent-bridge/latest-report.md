@@ -1,154 +1,151 @@
 # Latest agent report
 
-**Work package:** S0 governance merge and closeout
-**Status:** COMPLETE / AUTHORITATIVE / WAIT
+**Work package:** S1 foundation-contracts control-plane start gate
+**Status:** DRAFT PUBLISHED / EXACT-HEAD CI GREEN / WAIT
 **Report date:** 2026-09-11
 
 ## Outcome
 
-Platform-control PR #294 was merged after every bridge-pinned precondition
-matched. AI Core D1-D6 governance is now authoritative on
-`platform-control/main`.
+Authoritative `platform-control/main` still had
+`foundation_work_package_start_authorized: false`, so the operator-approved
+control-plane gate was required before any AI Core source work.
 
-Only PR #294 was merged. S1, runtime, service, transports, executor, consumers,
-deployment, release, tags, and AI Core PR #3-#5 were not changed.
+A minimal governance/docs/tests-only proposal was created on a fresh
+platform-control worktree, pushed, and published as draft PR #295. Hosted CI is
+green on the exact head. The PR was not merged, and S1 implementation was not
+started.
 
-## Exact Git state
+## Exact Git and PR state
 
 ### platform-control
 
-- PR: https://github.com/kkobanenko/platform-control/pull/294
-- Final PR state: `MERGED`
-- Reviewed branch: `governance/ai-core-s0-20260910`
-- Pinned pre-merge base: `6445a2ed8614ae0bb663b92413ebf04f3fbc1d99`
-- Pinned reviewed head: `0fd1354ee471b40165a50d016a6a28970db8443b`
-- Merge commit: `35a922ceacb51ff2e8e8ccacc00291fbd2155b52`
-- Authoritative `main`: `35a922ceacb51ff2e8e8ccacc00291fbd2155b52`
-- Merge time reported by GitHub: `2026-09-10T15:30:42Z`
+- Authoritative remote `main`: `35a922ceacb51ff2e8e8ccacc00291fbd2155b52`.
+- Fresh branch: `governance/ai-core-s1-start-20260911`.
+- Branch base: `35a922ceacb51ff2e8e8ccacc00291fbd2155b52`.
+- Branch head: `44d30f1a81fe7736c83a6f49ce7fde5c91412b08`.
+- Draft PR: https://github.com/kkobanenko/platform-control/pull/295
+- PR state: `OPEN`, `DRAFT`, `MERGEABLE`.
+- Hosted Infrastructure CI run: `34532744201`, `SUCCESS` on exact head.
+- The PR merge checklist remains unchecked.
 
-The authoritative main tree and reviewed head tree are both
-`502089127020b25d04277de3e330d03ef9e726e7`; `git diff` between them is empty.
-No merge-only content drift occurred.
+Because PR #295 is not merged, authoritative main still has S1 start false.
+The true value exists only in the review proposal.
 
 ### ai-core
 
-- Bridge branch: `test/ai-core-compatibility-characterization-20260909`
-- Closeout starting head: `53c4becb53cd3e2723866e7a12b24b87887db17b`
-- Production `main`: `7569441c18362cfd15524ad73f56f7f35580c86f`
-- Bridge delivery head: resolve with `git rev-parse HEAD`; final response records
-  exact pushed SHA to avoid recursive self-reference.
+- Production remote `main`: `7569441c18362cfd15524ad73f56f7f35580c86f`.
+- Bridge branch: `test/ai-core-compatibility-characterization-20260909`.
+- Bridge starting head: `2d7c61c62f9dd4319250813f313bf25cf0de67d6`.
+- No AI Core source, test, packaging, or runtime file changed in this work
+  package.
 
-## Authoritative governance flags
+## Proposed S1 authorization boundary
 
-Post-merge machine evidence and canonical indexes confirm:
+PR #295 proposes only:
 
 ```yaml
-ai_core_main_sha: 7569441c18362cfd15524ad73f56f7f35580c86f
 authorization:
   status: FOUNDATION_ONLY
+  authorized_work_package: S1_foundation_contracts
   foundation_contracts_authorized: true
-  foundation_work_package_start_authorized: false
+  foundation_work_package_start_authorized: true
   runtime_implementation_authorized: false
   service_implementation_authorized: false
   provider_transports_authorized: false
   executor_authorized: false
   consumer_migration_authorized: false
-provider_identity_policy:
-  new_ids_authorized: false
-capability_policy:
-  stt_segments_authorized: false
-gpu_boundary:
-  trust: UNKNOWN_BOUNDARY
-next_work_package:
-  id: S1_foundation_contracts
-  start_authorized: false
+  release_authorized: false
+  tag_authorized: false
+  deployment_authorized: false
 ```
 
-The accepted provider identities remain exactly:
+The broad legacy flag remains
+`ai_core_v0_3_implementation_authorized: false`. The accepted provider set is
+still exactly:
 
 - `vm100_local_ollama`;
 - `gpu_ollama`;
 - `ollama_cloud`;
 - `mistral_external`.
 
-ADR-022 and the operator decision are present on authoritative main:
+The root API remains the exact existing nine symbols. `STT_SEGMENTS` and new
+provider identities remain unauthorized. `gpu_ollama` remains
+`UNKNOWN_BOUNDARY`. GPU endpoint normalization/reachability evidence is kept
+separate from the HTTP 503 failed/inconclusive runtime-validation attempt; no
+runtime capability was promoted.
 
-- `docs/adr/ADR-022-ai-core-foundation-governance.md`;
-- `docs/decisions/2026-09-10-accept-ai-core-foundation-governance.md`;
-- `coordination/initiatives/ai-core-v0.3-design/evidence/operator-decision-ai-core-foundation-governance.yaml`.
+## platform-control changed files
 
-## Pre-merge verification
+- `coordination/current-initiative.yaml`
+- `coordination/initiatives.yaml`
+- `coordination/initiatives/ai-core-v0.3-design/initiative.yaml`
+- `coordination/initiatives/ai-core-v0.3-design/evidence/operator-decision-ai-core-s1-foundation-start.yaml`
+- `coordination/orchestrator-state.yaml`
+- `docs/decisions/2026-09-11-authorize-ai-core-s1-foundation-contracts.md`
+- `tests/test_ai_core_s0_governance_decision.py`
+- `tests/test_ai_core_s1_start_governance.py`
 
-- PR was OPEN, DRAFT, MERGEABLE before readiness transition.
-- Base matched pinned `main@6445a2ed...`.
-- Head matched pinned `0fd1354e...`.
-- Exact-head Infrastructure CI run `34486623033` was GREEN.
-- No reviews requested changes.
-- Diff contained exactly nine governance/config/coordination/docs/test files.
-- No runtime, product, deployment, migration, or infrastructure code appeared.
-- Narrow S0 tests: 5 passed.
+The S0 test update removes stale assertions that canonical coordination indexes
+must permanently point to the historical S0 evidence. It continues to guard the
+immutable S0 record and compatibility pointer; the new S1 test owns current
+canonical-index assertions.
 
-The PR body merge checklist was marked complete using the bridge-recorded
-external architecture review, exact-head CI result, and explicit operator
-merge authorization. PR was marked ready, then merged with
-`--match-head-commit 0fd1354e...` using repository merge-commit mode. The
-review branch was not deleted.
+## Verification
 
-## Post-merge verification
+- TDD RED: 3 expected failures before evidence/index/decision artifacts existed.
+- Focused S1 plus historical S0 guards: **8 passed**.
+- Control-plane validator: **PASS**, one known `/home` versus `/mnt` workspace
+  alias warning.
+- Full local pytest, workstation-strict mode: **1792 passed, 229 skipped, 3
+  failed**. All three failures exactly match the pre-change baseline path-alias
+  failures.
+- Full local pytest with control-plane mode: **1794 passed, 229 skipped, 1
+  failed**. The remaining test intentionally deletes that mode on a workstation
+  and reproduces the same path-alias failure.
+- `git diff --check`: **PASS**.
+- Hosted exact-head Infrastructure CI `34532744201`: **GREEN**, including
+  pytest, control validation, PR merge-gate structure, compose/shell/systemd
+  checks, secret scan, Docker builds, and image startup smoke.
 
-- Fresh remote `platform-control/main`: `35a922ce...`.
-- Main tree equals reviewed head tree exactly.
-- `pytest -q tests/test_ai_core_s0_governance_decision.py`: **5 passed**.
-- Control-plane validator: **PASS**, with one known `/home` versus `/mnt`
-  workspace-path warning.
-- Hosted exact-head CI remains GREEN through pytest, validator, merge-gate
-  structure, compose/shell/systemd checks, secret scan, Docker builds, and
-  startup smoke.
-- AI Core `main` remains `7569441c...`.
-- AI Core PR #3 remains OPEN/DRAFT at `4e26d67b825194e489a6a8b553c2a53dfea2a81f`.
-- AI Core PR #4 remains OPEN/DRAFT at `1b2569a612968a3ac5099dea955cfccdcb191d52`.
-- AI Core PR #5 remains OPEN/DRAFT at `25c269bb93dd37bd9b1556051972f5e1e60b34ad`.
-- AI Core tags remain `v0.1.0`, `v0.2.0`, `v0.2.1`, and `v0.2.2` at their
-  previously observed tag/peeled SHAs; no release or tag action occurred.
-- Platform-control issues #291, #292, and #293 remain OPEN with no comments or
-  labels; merge did not convert them into approvals.
-- No consumer repository operation occurred. PR diff and action scope contain
-  no consumer path.
-- No runtime, service, transport, executor, infrastructure, deployment, or
-  release action occurred.
+## Read-only immutability checks
 
-## Remaining blockers
+- AI Core PR #3 remains `OPEN/DRAFT` at
+  `4e26d67b825194e489a6a8b553c2a53dfea2a81f`.
+- AI Core PR #4 remains `OPEN/DRAFT` at
+  `1b2569a612968a3ac5099dea955cfccdcb191d52`.
+- AI Core PR #5 remains `OPEN/DRAFT` at
+  `25c269bb93dd37bd9b1556051972f5e1e60b34ad`.
+- No PR #3-#5 branch, metadata, base, or history was changed.
+- No consumer, infrastructure, deployment, release, or tag action occurred.
 
-- `foundation_work_package_start_authorized` remains false.
-- S1 requires a new explicit operator/ChatGPT authorization.
-- Runtime/service/transports/executor/consumer migration remain forbidden.
-- GPU remains `UNKNOWN_BOUNDARY`; separate infrastructure evidence is absent.
-- HTTP service needs a separate future ADR/design authorization.
-- New provider identities and `STT_SEGMENTS` remain deferred.
-- Exact error enum and retry counts/backoff/jitter/circuit-breaker policy remain
-  deferred to later governed packages.
+## Risks and blockers
+
+- PR #295 is review evidence only; it is not authoritative until merged.
+- PR #295 merge requires a new explicit operator authorization.
+- AI Core S1 source work remains blocked while authoritative main says start
+  false.
+- A future AI Core S1 PR will require separate review and merge authorization.
+- Runtime, service, transports, provider calls, retry/fallback executor,
+  consumers, deployment, release, tags, new identities, and `STT_SEGMENTS`
+  remain forbidden.
+- GPU trust remains unknown; no infrastructure evidence package exists.
+- Local strict validation retains the known `/home` versus `/mnt` alias issue;
+  hosted CI is authoritative and green.
 
 ## Rollback
 
-If S0 governance must be withdrawn, create a separately reviewed revert of
-merge commit `35a922ceacb51ff2e8e8ccacc00291fbd2155b52`. Do not rewrite main.
-No runtime, consumer, deployment, release, or tag rollback is needed.
+Before merge, rollback is to close draft PR #295 and delete/drop branch
+`governance/ai-core-s1-start-20260911`; authoritative main requires no revert.
 
-Bridge-only rollback: revert the closeout documentation commit.
+Bridge-only rollback is a normal revert of the documentation commit containing
+this report. No runtime or consumer rollback is needed.
 
-## Recommended next work package
+## Recommended next action
 
-After new explicit authorization only: `S1_foundation_contracts`.
-
-Recommended S1 boundary:
-
-- dependency-light identity contracts;
-- capability/evidence contracts;
-- privacy/egress contracts;
-- pure contract types and tests;
-- additive explicit submodules;
-- unchanged nine-symbol root API;
-- no SDKs, transports, provider calls, executor, HTTP service, consumer
-  migration, deployment, release, or tag.
+External architecture/governance review of exact head
+`44d30f1a81fe7736c83a6f49ce7fde5c91412b08`. If accepted, provide a separate
+explicit authorization to merge only unchanged PR #295 after rechecking exact
+base/head and green CI. Then verify authoritative `platform-control/main`
+before starting a fresh AI Core S1 branch.
 
 Current bridge state: **WAIT**.
