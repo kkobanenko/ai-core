@@ -1,192 +1,116 @@
 # Latest agent report
 
-**Work package:** S1 foundation contracts
-**Status:** IMPLEMENTED / DRAFT PR / EXACT-HEAD CI GREEN / WAIT
+**Work package:** S1 foundation contracts merge closeout
+**Status:** MERGED / AUTHORITATIVE / VERIFIED / WAIT
 **Report date:** 2026-09-11
 
 ## Outcome
 
-The authoritative `S1_foundation_contracts` package was implemented on a fresh
-AI Core branch from verified main. The result is a dependency-light contract
-layer only: provider identities, capability evidence, privacy/egress, focused
-tests, design/plan, and project handoff.
+AI Core PR #6 was merged after exact-state re-verification and direct operator
+authorization. Authoritative `ai-core/main` now contains only the reviewed S1
+foundation contracts, tests, and documentation. The merge tree is identical to
+the reviewed PR head; there is no merge-only content drift.
 
-Draft AI Core PR #6 is published and green on its exact head. It was not
-merged. Runtime, service, transports, provider calls, executor,
-retry/fallback execution, consumers, infrastructure, deployment, release, and
-tags were not changed.
+No S2, runtime, service, transport, provider call, executor, retry/fallback,
+routing, health, deadline, consumer, infrastructure, deployment, release, tag,
+or PR #3-#5 change was made.
 
-## Exact governance and Git state
-
-### platform-control
-
-- Authoritative `main`:
-  `c78b5e735d9b47e6550f2f6f7df084406c3ecfe0`
-- Authoritative policy: `FOUNDATION_ONLY`
-- Authorized package: `S1_foundation_contracts`
-- `foundation_work_package_start_authorized: true`
-- Broad `ai_core_v0_3_implementation_authorized: false`
-- Runtime/service/transports/executor/consumers/release/tag/deployment: false
+## Exact Git and governance state
 
 ### ai-core
 
-- Production `main`: `7569441c18362cfd15524ad73f56f7f35580c86f`
-- Branch: `feat/ai-core-s1-foundation-contracts-20260911`
-- Base: `7569441c18362cfd15524ad73f56f7f35580c86f`
-- Head: `f73a77706ab88c11ce01066c9b6c92406975da1f`
-- Draft PR: https://github.com/kkobanenko/ai-core/pull/6
-- PR state: `OPEN`, `DRAFT`, `MERGEABLE`
-- Exact-head Python 3.12 CI run `34572528885`: `SUCCESS`
-- Review gate: hosted CI complete; external review and merge authorization open
+- PR: `#6` — https://github.com/kkobanenko/ai-core/pull/6
+- PR state: `MERGED`
+- Merged at: `2026-09-11T13:20:22Z`
+- Reviewed base: `7569441c18362cfd15524ad73f56f7f35580c86f`
+- Reviewed head: `f73a77706ab88c11ce01066c9b6c92406975da1f`
+- Merge commit / authoritative `main`:
+  `f65221b4090a8d2e1fad7e3872e79ec52ec3ed5e`
+- Reviewed-head tree = merged-main tree:
+  `56693cca4419407feb5340e6ee421e37e798eb7c`
+- Source branch retained:
+  `feat/ai-core-s1-foundation-contracts-20260911`
+- Bridge branch:
+  `test/ai-core-compatibility-characterization-20260909`
 
-The S1 worktree is outside the user's untracked project-local `.worktrees/`:
-`/home/kok4444/projects/_coord_worktrees/ai-core-s1-foundation-contracts-20260911`.
-The user's `.worktrees/` and `uv.lock` were not modified or deleted.
+### platform-control
 
-## Delivered source contracts
+- Current authoritative `main`:
+  `52940fd772f948b54b34a5b2c36c6a53ada3f85a`
+- It advanced from reviewed S1-start SHA `c78b5e735d9b47e6550f2f6f7df084406c3ecfe0`
+  only through VM100 deployment-lock operations.
+- Diff across that drift affects only `coordination/deployment-lock.yaml`; AI
+  Core S1 governance did not change.
+- The drift was reported before merge and the operator explicitly instructed
+  continuation.
+- Policy remains `FOUNDATION_ONLY`; broad AI Core v0.3 implementation remains
+  unauthorized.
 
-### `ai_core.provider_catalog`
+## Merged boundary
 
-- exactly four accepted provider IDs;
-- immutable identity/boundary records and read-only catalog;
-- explicit fail-closed unknown-ID error;
-- `gpu_ollama` remains `UNKNOWN_BOUNDARY`;
-- no endpoint, credential, backend, health, cost, latency, priority, model, or
-  capability behavior.
+- New pure contract modules only:
+  - `src/ai_core/provider_catalog.py`
+  - `src/ai_core/capabilities.py`
+  - `src/ai_core/privacy.py`
+- Exact accepted provider IDs remain:
+  - `vm100_local_ollama`
+  - `gpu_ollama`
+  - `ollama_cloud`
+  - `mistral_external`
+- `gpu_ollama` remains `UNKNOWN_BOUNDARY`.
+- `FAILED_INCONCLUSIVE` does not become runtime evidence.
+- `SECRET` remains denied for raw, sanitized, and surrogated forms across
+  local-same-host, external, and unknown boundaries.
+- Missing request authorization denies external and unknown egress.
+- Root `ai_core.__all__` remains the exact existing nine-symbol API.
+- `pyproject.toml`, dependencies, lock files, and existing production modules
+  are unchanged.
+- New provider IDs, aliases, concrete model profiles, and `STT_SEGMENTS` remain
+  absent.
 
-### `ai_core.capabilities`
+## Verification
 
-- pure capability vocabulary: text, structured JSON, vision image, OCR PDF;
-- exact evidence levels: `CONFIGURED`, `UNIT_TESTED`, `INTEGRATION_TESTED`,
-  `RUNTIME_OBSERVED`, `FAILED_INCONCLUSIVE`;
-- immutable evidence subject `(provider, model, capability, boundary)`;
-- fail-closed validation for unknown/invalid subject values and boundary drift;
-- only `RUNTIME_OBSERVED` counts as a runtime observation, without implying
-  routing or production eligibility;
-- no concrete profiles and no `STT_SEGMENTS`.
-
-### `ai_core.privacy`
-
-- exact data-class and outbound-form vocabularies;
-- all 3 forms × 3 boundaries for `SECRET` deny pre-routing;
-- transformation cannot reclassify SECRET;
-- missing request-level authorization denies external and unknown egress;
-- authorization accepts only literal `True`;
-- non-enum values fail closed;
-- catalog membership cannot grant egress.
-
-## Compatibility boundary
-
-- Exact existing nine-symbol root `ai_core.__all__` is unchanged.
-- Existing tracing/config/attributes/IO source is unchanged.
-- New APIs require explicit submodule imports.
-- Tracing import does not load foundation or provider dependencies.
-- `pyproject.toml` is unchanged; no dependency/lock change.
-- No aliases, routing, health, deadline, transport, SDK, service, or executor.
-
-## Changed files
-
-- `src/ai_core/provider_catalog.py`
-- `src/ai_core/capabilities.py`
-- `src/ai_core/privacy.py`
-- `tests/test_s1_provider_catalog.py`
-- `tests/test_s1_capability_evidence.py`
-- `tests/test_s1_privacy_egress.py`
-- `tests/test_s1_compatibility_boundary.py`
-- `docs/superpowers/specs/2026-09-11-ai-core-s1-foundation-contracts-design.md`
-- `docs/superpowers/plans/2026-09-11-ai-core-s1-foundation-contracts.md`
-- `docs/handoffs/2026-09-11-ai-core-s1-foundation-contracts.md`
-
-All are new files. No pre-existing AI Core file changed.
-
-## PR #3 provenance
-
-PR #3 head `4e26d67b...` was read-only donor evidence. No commit was
-cherry-picked.
-
-Reimplemented test-first:
-
-- canonical constants;
-- immutable identity records and fail-closed lookup;
-- model-scoped capability vocabulary;
-- data-class/outbound-form vocabulary;
-- explicit submodule APIs.
-
-Redesigned:
-
-- behavioral provider profiles reduced to identity+boundary;
-- extra boundary states aligned to authoritative vocabulary;
-- concrete capability booleans/profiles replaced with evidence-only types;
-- transformed SECRET eligibility replaced with all-form denial;
-- catalog PII authority replaced by request-level authorization.
-
-Excluded:
-
-- endpoint/credential metadata and resolution;
-- backend/health/cost/latency/priority;
-- concrete model profiles;
-- aliases;
-- route/health/deadline/retry/fallback/runtime/service work.
-
-## Verification evidence
-
-- Baseline: **24 passed** on Python 3.10 using local `src`.
-- Final Python 3.10 AI Core suite: **71 passed**.
-- Hosted exact-head Python 3.12 CI `34572528885`: **GREEN**.
-- Read-only compatibility characterization with S1 source: **77 passed**.
-- Pinned workspace verifier: **9 consumer contracts verified**.
-- Compile check: **PASS**.
+- Pre-merge Python 3.10 suite: **71 passed**.
+- Exact-head Python 3.12 CI `34572528885`: **SUCCESS**.
+- Post-merge Python 3.10 suite on the tree proven identical to main:
+  **71 passed**.
+- Post-merge hosted main CI `34603741364` on
+  `f65221b4090a8d2e1fad7e3872e79ec52ec3ed5e`: **SUCCESS**.
+- Compatibility characterization with merged S1 source: **77 passed**.
+- Pinned consumer contract verifier: **9 verified**.
+- Python compile check: **PASS**.
 - `git diff --check`: **PASS**.
-- GitHub changed-path check: exactly ten S1 source/test/docs files.
-- Dependency and existing-production-path audit: no changes.
-
-TDD evidence includes module-not-found RED for each new source module, then
-focused/full GREEN. Self-review found two runtime type-validation gaps:
-
-- privacy invalid/truthy inputs: RED 6 failures, then 23 focused and 66 full
-  passes;
-- invalid capability-evidence subjects: RED 4 failures, then 15 focused and 71
-  full passes.
-
-The local environment emits an existing `pytest-asyncio` deprecation warning.
-It was not hidden by changing dependencies/configuration.
-
-## Read-only immutability checks
-
-- AI Core main remains `7569441c...`.
-- PR #3 remains `OPEN/DRAFT` at `4e26d67b...`.
-- PR #4 remains `OPEN/DRAFT` at `1b2569a6...`.
-- PR #5 remains `OPEN/DRAFT` at `25c269bb...`.
+- Reviewed-head versus merged-main content diff: empty.
+- PR #3 remains `OPEN/DRAFT` at `4e26d67b825194e489a6a8b553c2a53dfea2a81f`.
+- PR #4 remains `OPEN/DRAFT` at `1b2569a612968a3ac5099dea955cfccdcb191d52`.
+- PR #5 remains `OPEN/DRAFT` at `25c269bb93dd37bd9b1556051972f5e1e60b34ad`.
 - Tags `v0.1.0`, `v0.2.0`, `v0.2.1`, and `v0.2.2` retain their prior tag and
   peeled SHAs.
-- Consumer repositories were only read through pinned Git evidence; no write or
-  execution occurred.
-- No release, tag, deployment, or infrastructure action occurred.
+
+Local pytest still emits the existing `pytest-asyncio` configuration warning.
+The read-only worktree also cannot persist pytest cache. Neither warning affects
+test results, and no dependency/configuration change was made.
 
 ## Risks and blockers
 
-- PR #6 requires external architecture/governance review.
-- Merge is forbidden without separate explicit operator authorization.
-- These contracts do not execute or enforce provider calls; consumers retain
-  current behavior until separately governed migration.
-- Provider network boundaries are governance snapshots; GPU remains unknown.
-- No concrete capability evidence is shipped, so no production route becomes
-  eligible through S1.
-- Aliases and downstream adoption are deferred.
+- S1 defines contracts; it does not execute or enforce provider calls.
+- Consumers retain their current implementations and behavior.
+- GPU trust remains unknown and cannot be promoted from the inconclusive 503
+  attempt.
+- No concrete capability evidence is shipped, so S1 creates no eligible
+  production route.
+- S2 and every runtime or consumer package require a new external review and
+  explicit operator authorization.
+- Existing governance decisions outside S1 remain open where recorded.
 
 ## Rollback
 
-Before merge, close draft PR #6 and drop branch/worktree
-`feat/ai-core-s1-foundation-contracts-20260911`. Main, consumers, runtime,
-deployment, releases, and tags need no rollback.
+Create a separately reviewed revert of merge commit
+`f65221b4090a8d2e1fad7e3872e79ec52ec3ed5e` using mainline parent 1. Do not
+rewrite `main`, delete history, or move existing tags.
 
-If later merged, use a separately reviewed revert; never rewrite main or tags.
+## Next action
 
-## Recommended next action
-
-Review exact PR #6 head `f73a7770...` against platform-control ADR-022 and the
-S1 boundary. If accepted, issue a separate authorization that names PR #6,
-exact base/head, and green CI. Do not authorize runtime or later S2/S3 work
-implicitly.
-
-Current bridge state: **WAIT**.
+**WAIT.** External architect/operator must define and authorize the next narrow
+work package. Successful S1 merge does not authorize S2 or broad AI Core v0.3
+implementation.
