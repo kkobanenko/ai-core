@@ -1,4 +1,4 @@
-"""Разбор docs/agent-bridge/next-prompt.md (legacy + metadata)."""
+"""Разбор docs/agent-bridge/next-prompt.md (legacy + metadata) — v0.1.1."""
 
 from __future__ import annotations
 
@@ -13,25 +13,32 @@ _FRONT_MATTER_RE = re.compile(
     re.DOTALL,
 )
 
-# Legacy WAIT: первая markdown-заголовок строка "# WAIT".
+# Legacy WAIT: markdown-заголовок "# WAIT".
 _LEGACY_WAIT_RE = re.compile(r"(?m)^\s*#\s+WAIT\s*$")
 
-# Известные имена состояний (строгий набор).
 _KNOWN_STATES = {s.value: s for s in CoordState}
+
+# Обязательные поля для EXECUTOR_READY (все non-empty).
+EXECUTOR_READY_REQUIRED = (
+    "coord_version",
+    "state",
+    "prompt_id",
+    "target_repo",
+    "target_branch",
+    "target_worktree",
+    "base_sha",
+    "hosted_ci",
+    "max_executor_runs",
+)
 
 
 def _parse_simple_yaml_map(text: str) -> dict[str, Any]:
-    """Минимальный разбор плоского YAML map (только key: value).
-
-    Без внешних зависимостей. Вложенные структуры и списки не поддерживаются
-    в v0.1 — при их появлении fail-closed на уровне validate.
-    """
+    """Плоский YAML map. Duplicate keys → ValueError (fail closed)."""
     result: dict[str, Any] = {}
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        # Вложенность / списки — сразу ошибка для fail-closed выше.
         if line.startswith("-") or (line and not line[0].isalnum() and line[0] != "_"):
             raise ValueError(f"unsupported YAML line: {raw_line!r}")
         if ":" not in line:
@@ -41,11 +48,12 @@ def _parse_simple_yaml_map(text: str) -> dict[str, Any]:
         value = value.strip()
         if not key:
             raise ValueError(f"empty key in: {raw_line!r}")
-        # Убираем простые кавычки.
+        # v0.1.1: никаких last-value-wins.
+        if key in result:
+            raise ValueError(f"duplicate metadata key: {key!r}")
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
-        # Числа для известных числовых полей.
-        if key == "coord_version" or key == "max_executor_runs":
+        if key in ("coord_version", "max_executor_runs"):
             if value.isdigit():
                 result[key] = int(value)
             else:
@@ -58,23 +66,24 @@ def _parse_simple_yaml_map(text: str) -> dict[str, Any]:
 
 
 def _legacy_wait(text: str) -> bool:
-    """Legacy файл считается WAIT, если есть заголовок # WAIT."""
     return bool(_LEGACY_WAIT_RE.search(text))
 
 
-def parse_next_prompt(text: str) -> BridgePrompt:
-    """Разобрать текст next-prompt.md.
+def _is_missing(value: Any) -> bool:
+    """None или пустая строка = missing."""
+    if value is None:
+        return True
+    if isinstance(value, str) and value.strip() == "":
+        return True
+    return False
 
-    Правила v0.1:
-    - без metadata + legacy WAIT → state=WAIT, безопасно;
-    - без metadata + не WAIT → parse_error (fail closed);
-    - с metadata → строгая проверка полей и state.
-    """
+
+def parse_next_prompt(text: str) -> BridgePrompt:
+    """Разобрать текст next-prompt.md (v0.1.1)."""
     raw = text if text is not None else ""
     match = _FRONT_MATTER_RE.match(raw)
 
     if not match:
-        # Legacy путь без front matter.
         if _legacy_wait(raw):
             return BridgePrompt(
                 has_metadata=False,
@@ -127,7 +136,6 @@ def parse_next_prompt(text: str) -> BridgePrompt:
             parse_error=f"invalid front matter: {exc}",
         )
 
-    # Дубликаты ключей уже перекрыты dict; проверяем обязательные поля.
     if "state" not in meta:
         return _meta_error(raw, body, meta, "missing required field: state")
     if "coord_version" not in meta:
@@ -142,29 +150,53 @@ def parse_next_prompt(text: str) -> BridgePrompt:
     state_raw = meta.get("state")
     if not isinstance(state_raw, str):
         return _meta_error(raw, body, meta, f"state must be string, got {state_raw!r}")
-    # Несколько состояний в одном поле (через запятую/пробел) — fail closed.
     if re.search(r"[\s,|/]", state_raw.strip()):
         return _meta_error(raw, body, meta, f"multiple/invalid state: {state_raw!r}")
     state = _KNOWN_STATES.get(state_raw.strip())
     if state is None:
         return _meta_error(raw, body, meta, f"unknown state: {state_raw!r}")
 
-    max_runs = meta.get("max_executor_runs", 1)
-    if not isinstance(max_runs, int) or max_runs < 1:
-        return _meta_error(
-            raw, body, meta, f"invalid max_executor_runs: {max_runs!r}"
-        )
+    # EXECUTOR_READY: полный обязательный набор non-empty полей.
+    if state == CoordState.EXECUTOR_READY:
+        for field in EXECUTOR_READY_REQUIRED:
+            if field not in meta or _is_missing(meta.get(field)):
+                return _meta_error(
+                    raw,
+                    body,
+                    meta,
+                    f"EXECUTOR_READY missing required field: {field}",
+                )
+        max_runs = meta.get("max_executor_runs")
+        if not isinstance(max_runs, int) or max_runs < 1:
+            return _meta_error(
+                raw, body, meta, f"invalid max_executor_runs: {max_runs!r}"
+            )
+        prompt_id = str(meta.get("prompt_id")).strip()
+        if not prompt_id:
+            return _meta_error(raw, body, meta, "prompt_id must be non-empty")
+    else:
+        # Для WAIT/DONE/… достаточно coord_version+state; max_runs опционален.
+        max_runs = meta.get("max_executor_runs", 1)
+        if max_runs is not None and (
+            not isinstance(max_runs, int) or max_runs < 1
+        ):
+            return _meta_error(
+                raw, body, meta, f"invalid max_executor_runs: {max_runs!r}"
+            )
+        if max_runs is None:
+            max_runs = 1
+        prompt_id = _opt_str(meta.get("prompt_id"))
 
     return BridgePrompt(
         has_metadata=True,
         state=state,
-        prompt_id=_opt_str(meta.get("prompt_id")),
+        prompt_id=prompt_id,
         target_repo=_opt_str(meta.get("target_repo")),
         target_branch=_opt_str(meta.get("target_branch")),
         target_worktree=_opt_str(meta.get("target_worktree")),
         base_sha=_opt_str(meta.get("base_sha")),
         hosted_ci=_opt_str(meta.get("hosted_ci")),
-        max_executor_runs=max_runs,
+        max_executor_runs=int(max_runs),
         raw_text=raw,
         body=body,
         raw_metadata=meta,
@@ -176,7 +208,8 @@ def _opt_str(value: Any) -> Optional[str]:
     if value is None:
         return None
     if isinstance(value, str):
-        return value
+        text = value.strip()
+        return text if text else None
     return str(value)
 
 

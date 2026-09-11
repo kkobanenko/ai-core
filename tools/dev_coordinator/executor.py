@@ -14,7 +14,7 @@ ExecutorRunner = Callable[[Sequence[str], Path], tuple[int, str, str]]
 
 
 PRESERVE_BRIDGE_INSTRUCTION = """
-## Coordinator v0.1 — preserve legacy agent-bridge workflow
+## Coordinator v0.1.1 — preserve legacy agent-bridge workflow
 
 You are the Cursor Executor launched by the deterministic Coordinator.
 
@@ -38,13 +38,26 @@ def compose_executor_prompt(
     *,
     governance_text: str,
     bridge_prompt: BridgePrompt,
+    coordinator_note: str = "",
 ) -> str:
-    """Собрать промпт Executor без переинтерпретации требований Architect."""
+    """Собрать промпт Executor без переинтерпретации требований Architect.
+
+    governance_text должен быть из executor_worktree (authoritative).
+    coordinator_note — опциональный явный блок transition tooling, не governance.
+    """
     parts = [
-        "# Repository governance\n\n" + governance_text.strip(),
-        "# Active next-prompt.md (full)\n\n" + bridge_prompt.raw_text.strip(),
-        PRESERVE_BRIDGE_INSTRUCTION,
+        "# Repository governance (from executor_worktree)\n\n"
+        + governance_text.strip(),
     ]
+    if coordinator_note.strip():
+        parts.append(
+            "# Coordinator tooling note (non-authoritative)\n\n"
+            + coordinator_note.strip()
+        )
+    parts.append(
+        "# Active next-prompt.md (full)\n\n" + bridge_prompt.raw_text.strip()
+    )
+    parts.append(PRESERVE_BRIDGE_INSTRUCTION)
     return "\n\n---\n\n".join(parts) + "\n"
 
 

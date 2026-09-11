@@ -1,4 +1,4 @@
-"""Детерминированное решение: запускать Executor или нет."""
+"""Детерминированное решение: запускать Executor или нет (v0.1.1)."""
 
 from __future__ import annotations
 
@@ -23,22 +23,28 @@ def decide(
     primary_repo: Path,
     executor_worktree: Path,
     expected_remote_sha: Optional[str] = None,
-    executor_lock_held: bool = False,
     git_runner: Optional[GitRunner] = None,
     allow_dirty: bool = False,
     force_safety_check: bool = False,
+    # Если True — safety уже проверен снаружи (bridge + executor); skip здесь.
+    skip_executor_safety: bool = False,
 ) -> Decision:
-    """Одна оценка состояния bridge.
-
-    mode:
-      - shadow: никогда не мутирует; would_launch отражает гипотетический launch;
-      - launch: возвращает LAUNCH_EXECUTOR только при полном прохождении проверок.
-    """
+    """Одна оценка состояния bridge (без claim/lock — это делает cli.run_once)."""
     if mode not in ("shadow", "launch"):
         return Decision(
             action=Action.FAIL_CLOSED,
             state=None,
             reason=f"unknown mode: {mode!r}",
+            would_launch=False,
+            mutations=(),
+        )
+
+    # v0.1.1: launch + allow-dirty запрещены (unattended live).
+    if mode == "launch" and allow_dirty:
+        return Decision(
+            action=Action.FAIL_CLOSED,
+            state=CoordState.HUMAN_REQUIRED,
+            reason="launch + allow-dirty is forbidden in v0.1.1",
             would_launch=False,
             mutations=(),
         )
@@ -63,7 +69,6 @@ def decide(
 
     state = prompt.state
 
-    # Явные no-launch состояния (включая legacy WAIT).
     if state in NO_LAUNCH_STATES:
         return Decision(
             action=Action.NONE,
@@ -82,23 +87,22 @@ def decide(
             mutations=(),
         )
 
-    # EXECUTOR_READY: проверяем max_executor_runs и safety.
     if prompt.max_executor_runs != 1:
         return Decision(
             action=Action.FAIL_CLOSED,
             state=state,
             reason=(
                 f"fail closed: max_executor_runs={prompt.max_executor_runs} "
-                "(v0.1 enforces exactly 1)"
+                "(v0.1.1 enforces exactly 1)"
             ),
             would_launch=False,
             mutations=(),
         )
 
-    # В shadow можно пропускать тяжёлые git-проверки, если не запрошено,
-    # но для честного «would launch» всё равно считаем safety при наличии
-    # метаданных worktree/branch/base.
-    need_safety = mode == "launch" or force_safety_check or prompt.has_metadata
+    need_safety = (
+        not skip_executor_safety
+        and (mode == "launch" or force_safety_check or prompt.has_metadata)
+    )
     safety: Optional[SafetyReport] = None
     if need_safety:
         kwargs = {}
@@ -109,16 +113,15 @@ def decide(
             primary_repo=primary_repo,
             executor_worktree=executor_worktree,
             expected_remote_sha=expected_remote_sha,
-            executor_lock_held=executor_lock_held,
-            allow_dirty=allow_dirty,
+            # Live path never passes allow_dirty=True into safety.
+            allow_dirty=False,
             **kwargs,
         )
         if not safety.ok:
             return Decision(
                 action=Action.NONE,
                 state=CoordState.HUMAN_REQUIRED,
-                reason="unsafe worktree/git state: "
-                + "; ".join(safety.reasons),
+                reason="unsafe worktree/git state: " + "; ".join(safety.reasons),
                 would_launch=False,
                 mutations=(),
                 safety=safety,
@@ -134,7 +137,6 @@ def decide(
             safety=safety,
         )
 
-    # mode == launch
     return Decision(
         action=Action.LAUNCH_EXECUTOR,
         state=state,

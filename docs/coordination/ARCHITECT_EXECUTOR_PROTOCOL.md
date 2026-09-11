@@ -1,4 +1,4 @@
-# Architect ↔ Executor protocol (transitional)
+# Architect ↔ Executor protocol (transitional, Coordinator v0.1.1)
 
 ## Authoritative channel
 
@@ -13,34 +13,22 @@ docs/agent-bridge/
   README.md           ← bridge conventions
 ```
 
-Governance truth still lives in `AGENTS.md`, `.cursor/rules/**`, and
-platform-control. Bridge files are coordination artifacts; on conflict,
-governance/evidence wins and the conflict is recorded in the next report.
+Governance truth still lives in `AGENTS.md`, `.cursor/rules/**` (of the
+**executor worktree**), and platform-control.
 
-## Current (legacy) loop
+## Transitional loop (v0.1.1)
 
-1. Architect writes `next-prompt.md`.
-2. Human starts Cursor Executor with that prompt.
-3. Executor works, updates `latest-report.md`, archives artifacts.
-4. Architect reviews; may set `# WAIT` or a new prompt.
-5. Human says «Твой ход» when Architect should continue.
-
-## Transitional loop (Coordinator v0.1)
-
-1. Architect writes `next-prompt.md` (legacy WAIT **or** Coordinator metadata).
-2. Human runs Coordinator (`--mode shadow` first; `--mode launch` when ready).
+1. Architect writes `next-prompt.md` (legacy `# WAIT` **or** Coordinator metadata).
+2. Human runs Coordinator (`shadow` first; `launch` only when authorized).
 3. Coordinator:
-   - reads bridge state;
-   - if not `EXECUTOR_READY` → prints decision and exits (no Cursor);
-   - if `EXECUTOR_READY` and safety OK → launches Cursor **once**;
-   - observes exit code → **stops** (no autonomous loop).
-4. Executor continues the **same** report/archive convention.
-5. When bridge returns to WAIT / ARCHITECT_REVIEW, Coordinator does nothing
-   until the human asks again («Твой ход»).
+   - verifies bridge **source** (`--bridge-worktree` + prompt path + git + remote tip);
+   - evaluates state;
+   - for `EXECUTOR_READY`: process lock → **atomic claim** → launch Cursor once;
+   - stops (no loop).
+4. Executor continues the same report/archive convention.
+5. Re-invocation with the **same** ready identity does **not** launch again.
 
-## Coordinator metadata (future prompts)
-
-Optional YAML front matter (backwards compatible):
+## Coordinator metadata
 
 ```yaml
 ---
@@ -56,42 +44,29 @@ max_executor_runs: 1
 ---
 ```
 
-### Required v0.1 states
+### Required for `EXECUTOR_READY`
 
-| State | Coordinator behavior |
+All of: `coord_version`, `state`, `prompt_id`, `target_repo`, `target_branch`,
+`target_worktree`, `base_sha`, `hosted_ci`, `max_executor_runs` — **non-empty**.
+
+Duplicate YAML keys → parse error (fail closed).
+
+### Other states
+
+`WAIT` / `DONE` / … may use a shorter metadata block (`coord_version` + `state`).
+
+Legacy `# WAIT` without front matter → no action, exit cleanly.
+
+## Ownership
+
+| Concern | v0.1.1 owner |
 | --- | --- |
-| `WAIT` | Do nothing, exit cleanly |
-| `EXECUTOR_READY` | May launch once (launch mode + safety) |
-| `EXECUTOR_RUNNING` | No launch (already running / reserved) |
-| `ARCHITECT_REVIEW` | No launch |
-| `HUMAN_REQUIRED` | No launch |
-| `PAUSED` | No launch |
-| `DONE` | No launch |
+| Start gate + exactly-once claim + process lock | Coordinator |
+| Implement / commit / push / publish report | Executor (legacy) |
+| Architecture decisions | Architect / human |
+| Hosted CI as merge gate | Humans / policy — never iteration |
 
-Legacy files **without** front matter:
+## Explicit non-goals (still)
 
-- `# WAIT` heading → treat as `WAIT` (zero mutations).
-- Anything else → **fail closed** (do not invent EXECUTOR_READY).
-
-Unknown or inconsistent metadata → **fail closed**.
-
-## Ownership today vs later
-
-| Concern | v0.1 owner | Possible v0.2 owner |
-| --- | --- | --- |
-| Decide whether Executor may start | Coordinator | Coordinator |
-| Start Cursor | Coordinator (launch mode) | Coordinator |
-| Implement code / follow prompt | Executor | Executor |
-| Commit / push / publish report | Executor (legacy) | Coordinator (candidate) |
-| Hosted CI as merge gate | Humans / policy | unchanged |
-| Architecture decisions | Architect / human | never Coordinator |
-
-## Explicit non-goals
-
-Coordinator must not:
-
-- reinterpret Architect technical requirements;
-- create PRs or trigger hosted CI for iteration;
-- switch the primary AI Core checkout silently;
-- stash/reset/clean unknown dirty files;
-- run endless loops.
+No polling daemon, no automatic Architect, no PR/Actions ownership, no systemd,
+no reclaim-by-timeout, no commit/push takeover (candidate for v0.2).
