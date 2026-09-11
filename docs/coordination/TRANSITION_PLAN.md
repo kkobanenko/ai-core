@@ -75,4 +75,6 @@ v0.1:   Executor owned edit + commit + push
 v0.1.1: live-pilot-ready safety (claim/lock/bridge/repo)
 v0.2:   Executor owns bounded edits; Coordinator owns
         postcondition validation + exact-path commit/push/verify
+v0.2.1: optional declared transient_paths with baseline + exact cleanup
+        (e.g. uv.lock) — never silent ignore, never .gitignore for agent
 ```

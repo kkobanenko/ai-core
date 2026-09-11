@@ -6,6 +6,7 @@ import re
 from typing import Any, Optional
 
 from tools.dev_coordinator.models import BridgePrompt, CoordState
+from tools.dev_coordinator.transient import validate_transient_paths
 
 _FRONT_MATTER_RE = re.compile(
     r"\A---\s*\n(.*?)\n---\s*\n?(.*)\Z",
@@ -97,6 +98,7 @@ def _empty_pub() -> dict[str, Any]:
         "publication_commit": False,
         "publication_push": False,
         "commit_message": None,
+        "transient_paths": (),
     }
 
 
@@ -183,9 +185,17 @@ def parse_next_prompt(text: str) -> BridgePrompt:
 
     allowed = _parse_path_list(meta.get("allowed_paths"))
     required = _parse_path_list(meta.get("required_paths"))
+    transient = _parse_path_list(meta.get("transient_paths"))
     pub_commit = bool(meta.get("publication_commit", False))
     pub_push = bool(meta.get("publication_push", False))
     commit_message = _opt_str(meta.get("commit_message"))
+
+    # transient_paths валидны для любого state с metadata (fail closed early).
+    t_err = validate_transient_paths(
+        transient, allowed=allowed, required=required
+    )
+    if t_err:
+        return _meta_error(raw, body, meta, t_err)
 
     if state == CoordState.EXECUTOR_READY:
         for field in EXECUTOR_READY_REQUIRED:
@@ -263,6 +273,7 @@ def parse_next_prompt(text: str) -> BridgePrompt:
         publication_commit=pub_commit,
         publication_push=pub_push,
         commit_message=commit_message,
+        transient_paths=transient,
     )
 
 
@@ -297,4 +308,5 @@ def _meta_error(
         publication_commit=bool(meta.get("publication_commit", False)),
         publication_push=bool(meta.get("publication_push", False)),
         commit_message=_opt_str(meta.get("commit_message")),
+        transient_paths=_parse_path_list(meta.get("transient_paths")),
     )

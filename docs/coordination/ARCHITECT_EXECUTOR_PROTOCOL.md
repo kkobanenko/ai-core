@@ -1,41 +1,22 @@
-# Architect ↔ Executor protocol (Coordinator v0.2)
-
-## Authoritative channel
-
-`docs/agent-bridge/**` remains the Architect control channel during transition.
+# Architect ↔ Executor protocol (Coordinator v0.2.1)
 
 ## Ownership
 
 | Concern | Owner |
 | --- | --- |
-| Architecture / prompt | Architect |
-| Bounded file edits + required artifacts | Cursor Executor |
-| Postcondition validation (real `git status`) | Coordinator |
-| Exact-path `git add` / `commit` / `push` / remote verify | Coordinator |
-| Hosted CI as merge gate | Humans / policy |
+| Bounded edits / required artifacts | Executor |
+| Declared transient tool side-effects cleanup | Coordinator (strict contract) |
+| Postconditions + exact-path commit/push | Coordinator |
 
 ```text
-v0.1: Executor owned edit + commit + push
-v0.2: Executor owns bounded edits; Coordinator owns publication
+allowed_paths   = intended work product
+transient_paths = explicitly anticipated disposable tool side-effects
 ```
 
-## Executor rules (v0.2)
+## Strictness
 
-Executor **must not** be required to commit/push. If shell/git tools are rejected,
-it should still write allowed files and exit; Coordinator inspects the worktree.
+Coordinator never trusts Executor stdout about changed files.
 
-## Coordinator publication contract
+Undeclared unexpected paths still fail closed.
 
-See runbook for flat metadata fields:
-
-`allowed_paths`, `required_paths`, `publication_commit`, `publication_push`, `commit_message`.
-
-Unexpected paths (example from pilot #1: `uv.lock`) → fail closed, no auto-delete.
-
-## Exactly-once + lock
-
-Unchanged from v0.1.1: persistent claim + `fcntl.flock` singleton under XDG state.
-
-## Non-goals
-
-No daemon loop, no PR creation, no Actions dispatch, no reclaim-by-timeout, no S2A.
+Transient cleanup is opt-in via metadata and never uses `git clean` / globs / recursive deletes.

@@ -12,4 +12,4 @@
 Executor exit code 0 ≠ work-package success.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

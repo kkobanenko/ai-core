@@ -1003,3 +1003,321 @@ def test_compose_prompt_forbids_executor_commit():
     assert "MUST NOT" in composed
     assert "git commit" in composed
     assert "Coordinator owns these" in composed
+
+
+# --- v0.2.1 transient_paths ---
+
+from tools.dev_coordinator.transient import (
+    classify_and_cleanup_transients,
+    snapshot_transients,
+    validate_transient_path_syntax,
+    validate_transient_paths,
+)
+
+
+def test_transient_overlap_allowed_fail_parse():
+    text = _ready_pub(
+        "/tmp/x",
+        allowed_paths="uv.lock",
+        required_paths="uv.lock",
+        transient_paths="uv.lock",
+        commit_message="x",
+    )
+    prompt = parse_next_prompt(text)
+    assert prompt.parse_error is not None
+    assert "overlaps allowed" in prompt.parse_error
+
+
+def test_transient_overlap_required_fail_parse():
+    err = validate_transient_paths(
+        (REPORT,),
+        allowed=("other.md",),
+        required=(REPORT,),
+    )
+    assert err is not None
+    assert "overlaps required" in err
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["../uv.lock", "/abs/uv.lock", "*.lock", "dir/", "a/../b", "./uv.lock"],
+)
+def test_transient_path_syntax_rejected(bad: str):
+    assert validate_transient_path_syntax(bad) is not None
+
+
+def test_pilot2_with_transient_uv_lock_success(tmp_path: Path):
+    """Pilot #2 shape WITH transient_paths=uv.lock → cleanup → publish success."""
+    state = tmp_path / "coord-state"
+    executor = tmp_path / "executor-wt"
+    bridge = tmp_path / "bridge-wt"
+    executor.mkdir()
+    bridge.mkdir()
+    (executor / "AGENTS.md").write_text("gov", encoding="utf-8")
+
+    meta = _ready_pub(str(executor), transient_paths="uv.lock", prompt_id="pilot2-transient")
+    prompt_file = bridge / "docs" / "agent-bridge" / "next-prompt.md"
+    prompt_file.parent.mkdir(parents=True)
+    prompt_file.write_text(meta, encoding="utf-8")
+
+    git_cmds = []
+    phase = {"after_exec": False}
+
+    def fake_runner(args, cwd):
+        report = Path(cwd) / REPORT
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text("# pilot2\n", encoding="utf-8")
+        (Path(cwd) / "uv.lock").write_text("# lock\n", encoding="utf-8")
+        phase["after_exec"] = True
+        return 0, "ok", ""
+
+    def git(args, cwd):
+        cmd = list(args)
+        git_cmds.append(tuple(cmd))
+        cwd_s = str(cwd)
+        if cmd[:2] == ["branch", "--show-current"]:
+            if "bridge" in cwd_s:
+                return 0, "test/bridge\n", ""
+            return 0, "docs/coordinator-live-pilot-readme-audit-20260911\n", ""
+        if cmd[:2] == ["rev-parse", "HEAD"]:
+            if "bridge" in cwd_s:
+                return 0, "bridgehead001\n", ""
+            if any(c[0] == "commit" for c in git_cmds[:-1]):
+                return 0, "newsha001\n", ""
+            return 0, "abc123def456\n", ""
+        if cmd == ["rev-parse", "--is-inside-work-tree"]:
+            return 0, "true\n", ""
+        if cmd[:2] == ["ls-files", "--error-unmatch"]:
+            return 1, "", "not tracked"
+        if cmd[:2] == ["status", "--porcelain"]:
+            uv = Path(cwd) / "uv.lock"
+            rep = Path(cwd) / REPORT
+            if uv.exists() and rep.exists():
+                return 0, f"?? {REPORT}\n?? uv.lock\n", ""
+            if rep.exists():
+                return 0, f"?? {REPORT}\n", ""
+            return 0, "", ""
+        if cmd[:3] == ["remote", "get-url", "origin"]:
+            return 0, "git@github.com:kkobanenko/ai-core.git\n", ""
+        if cmd[:2] == ["ls-remote", "origin"]:
+            if "bridge" in cwd_s:
+                return 0, "bridgehead001\trefs/heads/test/bridge\n", ""
+            if any(c[0] == "push" for c in git_cmds[:-1]):
+                return 0, "newsha001\trefs/heads/x\n", ""
+            return 0, "abc123def456\trefs/heads/x\n", ""
+        if cmd[:2] == ["diff", "--check"] or cmd[:3] == ["diff", "--cached", "--check"]:
+            return 0, "", ""
+        if cmd[0] == "add":
+            assert cmd[1] == "--"
+            assert "uv.lock" not in cmd
+            assert REPORT in cmd
+            return 0, "", ""
+        if cmd[0] == "commit":
+            return 0, "", ""
+        if cmd[0] == "push":
+            return 0, "", ""
+        return 1, "", f"unexpected {cmd}"
+
+    result = run_once(
+        mode="launch",
+        repo_root=tmp_path,
+        executor_worktree=executor,
+        bridge_prompt_path=prompt_file,
+        bridge_worktree=bridge,
+        state_dir=state,
+        git_runner=git,
+        executor_runner=fake_runner,
+        agent_bin="fake-agent",
+    )
+    assert result.executor_exit_code == 0
+    assert result.transient_paths_observed == ("uv.lock",)
+    assert result.transient_paths_cleaned == ("uv.lock",)
+    assert result.transient_cleanup_verified is True
+    assert result.transient_sha256 and "uv.lock" in result.transient_sha256
+    assert not (executor / "uv.lock").exists()
+    assert result.postconditions_ok is True
+    assert result.commit_created is True
+    assert result.push_attempted is True
+    assert result.publication_verified is True
+    assert result.final_status == FinalStatus.WORK_PACKAGE_SUCCESS
+
+
+def test_pilot2_without_transient_still_fails(tmp_path: Path):
+    """Без transient_paths uv.lock остаётся POSTCONDITION_FAILED (opt-in only)."""
+    state = tmp_path / "coord-state"
+    executor = tmp_path / "executor-wt"
+    bridge = tmp_path / "bridge-wt"
+    executor.mkdir()
+    bridge.mkdir()
+    (executor / "AGENTS.md").write_text("gov", encoding="utf-8")
+    meta = _ready_pub(str(executor), prompt_id="pilot2-no-transient")
+    prompt_file = bridge / "docs" / "agent-bridge" / "next-prompt.md"
+    prompt_file.parent.mkdir(parents=True)
+    prompt_file.write_text(meta, encoding="utf-8")
+
+    def fake_runner(args, cwd):
+        report = Path(cwd) / REPORT
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text("# x\n", encoding="utf-8")
+        (Path(cwd) / "uv.lock").write_text("x\n", encoding="utf-8")
+        return 0, "ok", ""
+
+    def git(args, cwd):
+        cmd = list(args)
+        cwd_s = str(cwd)
+        if cmd[:2] == ["branch", "--show-current"]:
+            if "bridge" in cwd_s:
+                return 0, "test/bridge\n", ""
+            return 0, "docs/coordinator-live-pilot-readme-audit-20260911\n", ""
+        if cmd[:2] == ["rev-parse", "HEAD"]:
+            if "bridge" in cwd_s:
+                return 0, "bridgehead001\n", ""
+            return 0, "abc123def456\n", ""
+        if cmd == ["rev-parse", "--is-inside-work-tree"]:
+            return 0, "true\n", ""
+        if cmd[:2] == ["status", "--porcelain"]:
+            if (Path(cwd) / "uv.lock").exists():
+                return 0, f"?? {REPORT}\n?? uv.lock\n", ""
+            return 0, "", ""
+        if cmd[:3] == ["remote", "get-url", "origin"]:
+            return 0, "git@github.com:kkobanenko/ai-core.git\n", ""
+        if cmd[:2] == ["ls-remote", "origin"]:
+            tip = "bridgehead001" if "bridge" in cwd_s else "abc123def456"
+            return 0, f"{tip}\trefs/heads/x\n", ""
+        if cmd[:2] == ["diff", "--check"]:
+            return 0, "", ""
+        if cmd[0] in ("add", "commit", "push"):
+            raise AssertionError("no publication on unexpected uv.lock")
+        return 1, "", f"unexpected {cmd}"
+
+    result = run_once(
+        mode="launch",
+        repo_root=tmp_path,
+        executor_worktree=executor,
+        bridge_prompt_path=prompt_file,
+        bridge_worktree=bridge,
+        state_dir=state,
+        git_runner=git,
+        executor_runner=fake_runner,
+        agent_bin="fake-agent",
+    )
+    assert result.final_status == FinalStatus.POSTCONDITION_FAILED
+    assert "uv.lock" in result.unexpected_paths
+    assert result.commit_created is False
+
+
+def test_transient_existed_before_fail(tmp_path: Path):
+    executor = tmp_path / "wt"
+    executor.mkdir()
+    (executor / "uv.lock").write_text("pre\n", encoding="utf-8")
+
+    def git(args, cwd):
+        cmd = list(args)
+        if cmd[:2] == ["status", "--porcelain"]:
+            return 0, "?? uv.lock\n", ""
+        if cmd[:2] == ["ls-files", "--error-unmatch"]:
+            return 1, "", "error"
+        return 1, "", f"unexpected {cmd}"
+
+    baselines, err = snapshot_transients(
+        ("uv.lock",), executor_worktree=executor, git_runner=git
+    )
+    assert err is not None
+    assert "not clean before launch" in err
+
+
+def test_transient_tracked_fail_cleanup(tmp_path: Path):
+    executor = tmp_path / "wt"
+    executor.mkdir()
+    (executor / "uv.lock").write_text("x\n", encoding="utf-8")
+    base = (
+        type("B", (), {})()
+    )
+    from tools.dev_coordinator.transient import TransientBaseline
+
+    baselines = (
+        TransientBaseline(
+            path="uv.lock",
+            exists_before=False,
+            tracked_before=False,
+            status_before="",
+        ),
+    )
+
+    def git(args, cwd):
+        cmd = list(args)
+        if cmd[:2] == ["status", "--porcelain"]:
+            # Tracked modification style M  (space M) — not ??
+            return 0, " M uv.lock\n", ""
+        return 1, "", f"unexpected {cmd}"
+
+    result = classify_and_cleanup_transients(
+        prompt_allowed=(REPORT,),
+        prompt_transient=("uv.lock",),
+        baselines=baselines,
+        executor_worktree=executor,
+        git_runner=git,
+    )
+    assert result.ok is False
+    assert "not untracked" in result.reason
+    assert (executor / "uv.lock").exists()
+
+
+def test_two_transients_only_one_declared(tmp_path: Path):
+    executor = tmp_path / "wt"
+    executor.mkdir()
+    (executor / "uv.lock").write_text("a\n", encoding="utf-8")
+    (executor / "extra.lock").write_text("b\n", encoding="utf-8")
+    from tools.dev_coordinator.transient import TransientBaseline
+
+    baselines = (
+        TransientBaseline("uv.lock", False, False, ""),
+    )
+
+    def git(args, cwd):
+        cmd = list(args)
+        if cmd[:2] == ["status", "--porcelain"]:
+            return 0, "?? uv.lock\n?? extra.lock\n", ""
+        return 1, "", f"unexpected {cmd}"
+
+    result = classify_and_cleanup_transients(
+        prompt_allowed=(REPORT,),
+        prompt_transient=("uv.lock",),
+        baselines=baselines,
+        executor_worktree=executor,
+        git_runner=git,
+    )
+    assert result.ok is False
+    assert "extra.lock" in result.reason
+    assert (executor / "uv.lock").exists()  # no cleanup when undeclared unexpected
+
+
+def test_cleanup_then_second_status_unexpected(tmp_path: Path):
+    executor = tmp_path / "wt"
+    executor.mkdir()
+    (executor / "uv.lock").write_text("a\n", encoding="utf-8")
+    from tools.dev_coordinator.transient import TransientBaseline
+
+    baselines = (TransientBaseline("uv.lock", False, False, ""),)
+    calls = {"n": 0}
+
+    def git(args, cwd):
+        cmd = list(args)
+        if cmd[:2] == ["status", "--porcelain"]:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return 0, "?? uv.lock\n", ""
+            # После unlink uv.lock «появляется» другой unexpected.
+            return 0, "?? surprise.txt\n", ""
+        return 1, "", f"unexpected {cmd}"
+
+    result = classify_and_cleanup_transients(
+        prompt_allowed=(REPORT,),
+        prompt_transient=("uv.lock",),
+        baselines=baselines,
+        executor_worktree=executor,
+        git_runner=git,
+    )
+    assert result.ok is False
+    assert result.cleaned == ("uv.lock",)
+    assert "surprise.txt" in result.reason

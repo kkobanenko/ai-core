@@ -35,6 +35,10 @@ from tools.dev_coordinator.safety import (
     _default_git_runner,
     verify_bridge_source,
 )
+from tools.dev_coordinator.transient import (
+    classify_and_cleanup_transients,
+    snapshot_transients,
+)
 
 
 DEFAULT_BRIDGE_REL = Path("docs/agent-bridge/next-prompt.md")
@@ -304,6 +308,37 @@ def run_once(
                 elapsed_seconds=_elapsed(),
             )
 
+        # v0.2.1: baseline snapshot для declared transient paths.
+        baselines = ()
+        if prompt.transient_paths:
+            baselines, snap_err = snapshot_transients(
+                prompt.transient_paths,
+                executor_worktree=executor_worktree,
+                git_runner=runner,
+            )
+            if snap_err:
+                decision = Decision(
+                    action=Action.FAIL_CLOSED,
+                    state=CoordState.HUMAN_REQUIRED,
+                    reason=snap_err,
+                    would_launch=False,
+                    mutations=("claim",),
+                )
+                messages.append(snap_err)
+                return RunResult(
+                    mode=mode,
+                    decision=decision,
+                    executor_launched=False,
+                    executor_exit_code=None,
+                    messages=tuple(messages),
+                    final_status=FinalStatus.FAIL_CLOSED,
+                    declared_transient_paths=prompt.transient_paths,
+                    elapsed_seconds=_elapsed(),
+                )
+            messages.append(
+                "transient baseline ok: " + ",".join(prompt.transient_paths)
+            )
+
         governance = load_executor_governance(executor_worktree)
         composed = compose_executor_prompt(
             governance_text=governance,
@@ -351,10 +386,11 @@ def run_once(
                 executor_log_path=log_path,
             )
 
-        # Нужны postconditions если есть allowed/required или publication.
+        # Нужны postconditions если есть allowed/required/transient или publication.
         need_post = bool(
             prompt.allowed_paths
             or prompt.required_paths
+            or prompt.transient_paths
             or prompt.publication_commit
             or prompt.publication_push
         )
@@ -383,7 +419,55 @@ def run_once(
                 executor_stdout_tail=stdout_tail,
                 executor_stderr_tail=stderr_tail,
                 executor_log_path=log_path,
+                declared_transient_paths=prompt.transient_paths,
             )
+
+        # Controlled transient cleanup (opt-in) BEFORE normal postconditions.
+        t_observed: tuple[str, ...] = ()
+        t_cleaned: tuple[str, ...] = ()
+        t_verified: Optional[bool] = None
+        t_sha: Optional[dict] = None
+        if prompt.transient_paths:
+            cleanup = classify_and_cleanup_transients(
+                prompt_allowed=prompt.allowed_paths,
+                prompt_transient=prompt.transient_paths,
+                baselines=baselines,
+                executor_worktree=executor_worktree,
+                git_runner=runner,
+            )
+            t_observed = cleanup.observed
+            t_cleaned = cleanup.cleaned
+            t_verified = cleanup.cleanup_verified
+            t_sha = cleanup.sha256_by_path or None
+            messages.append(f"transient: {cleanup.reason}")
+            if not cleanup.ok:
+                decision = Decision(
+                    action=Action.LAUNCH_EXECUTOR,
+                    state=CoordState.HUMAN_REQUIRED,
+                    reason=cleanup.reason,
+                    would_launch=True,
+                    mutations=("claim", "launch_executor"),
+                    safety=decision.safety,
+                )
+                return RunResult(
+                    mode=mode,
+                    decision=decision,
+                    executor_launched=True,
+                    executor_exit_code=exit_code,
+                    messages=tuple(messages),
+                    final_status=cleanup.final_status,
+                    postconditions_ok=False,
+                    unexpected_paths=cleanup.remaining_unexpected,
+                    elapsed_seconds=_elapsed(),
+                    executor_stdout_tail=stdout_tail,
+                    executor_stderr_tail=stderr_tail,
+                    executor_log_path=log_path,
+                    declared_transient_paths=prompt.transient_paths,
+                    transient_paths_observed=t_observed,
+                    transient_paths_cleaned=t_cleaned,
+                    transient_cleanup_verified=t_verified,
+                    transient_sha256=t_sha,
+                )
 
         post = evaluate_postconditions(
             prompt,
@@ -421,6 +505,11 @@ def run_once(
                 executor_stdout_tail=stdout_tail,
                 executor_stderr_tail=stderr_tail,
                 executor_log_path=log_path,
+                declared_transient_paths=prompt.transient_paths,
+                transient_paths_observed=t_observed,
+                transient_paths_cleaned=t_cleaned,
+                transient_cleanup_verified=t_verified,
+                transient_sha256=t_sha,
             )
 
         pub = publish_exact_paths(
@@ -442,7 +531,6 @@ def run_once(
                 + "; ".join(" ".join(c) for c in pub.git_commands)
             )
 
-        # HUMAN_REQUIRED если publication не полностью успешна при запросе push.
         end_state = CoordState.EXECUTOR_READY
         if final_status != FinalStatus.WORK_PACKAGE_SUCCESS:
             end_state = CoordState.HUMAN_REQUIRED
@@ -475,6 +563,11 @@ def run_once(
             executor_stdout_tail=stdout_tail,
             executor_stderr_tail=stderr_tail,
             executor_log_path=log_path,
+            declared_transient_paths=prompt.transient_paths,
+            transient_paths_observed=t_observed,
+            transient_paths_cleaned=t_cleaned,
+            transient_cleanup_verified=t_verified,
+            transient_sha256=t_sha,
         )
     finally:
         lock.release()
@@ -504,6 +597,11 @@ def result_to_json(result: RunResult) -> dict:
         "executor_stdout_tail": result.executor_stdout_tail,
         "executor_stderr_tail": result.executor_stderr_tail,
         "executor_log_path": result.executor_log_path,
+        "declared_transient_paths": list(result.declared_transient_paths),
+        "transient_paths_observed": list(result.transient_paths_observed),
+        "transient_paths_cleaned": list(result.transient_paths_cleaned),
+        "transient_cleanup_verified": result.transient_cleanup_verified,
+        "transient_sha256": result.transient_sha256,
         "messages": list(result.messages),
         "safety_ok": (
             None if result.decision.safety is None else result.decision.safety.ok

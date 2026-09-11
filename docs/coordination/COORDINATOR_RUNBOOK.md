@@ -1,98 +1,57 @@
-# Coordinator runbook (v0.2 deterministic publication)
+# Coordinator runbook (v0.2.1 transient artifacts)
 
-## Ownership split
-
-```text
-v0.1:
-  Executor owned edit + commit + push
-
-v0.2:
-  Executor owns bounded edits / artifacts / local checks
-  Coordinator owns postcondition validation + exact-path commit + push + remote verify
-```
-
-`executor_exit_code == 0` means only `EXECUTOR_PROCESS_EXITED_ZERO`, **not** work-package success.
-
-## Location
+## Ownership
 
 ```text
-tools/dev_coordinator/
+allowed_paths   = intended work product (may be committed)
+transient_paths = explicitly anticipated disposable tool side-effects
 ```
-
-State/locks outside git:
 
 ```text
-${AI_CORE_COORDINATOR_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/ai-core-dev-coordinator}/
-  claims/
-  locks/
-  logs/          # capped executor stdout/stderr tails
+v0.2:   unexpected untracked → POSTCONDITION_FAILED
+v0.2.1: declared transient may be cleaned only under strict contract
 ```
 
-## Publication metadata (flat, no PyYAML lists)
+Never: `if path in transient_paths: ignore`. Always: baseline → classify → evidence → exact unlink → re-status → normal postconditions.
+
+## Metadata
 
 ```yaml
----
-coord_version: 1
-state: EXECUTOR_READY
-prompt_id: ...
-target_repo: kkobanenko/ai-core
-target_branch: docs/...
-target_worktree: /path/to/executor
-base_sha: ...
-hosted_ci: forbidden
-max_executor_runs: 1
-allowed_paths: docs/handoffs/report.md
-required_paths: docs/handoffs/report.md
-publication_commit: true
-publication_push: true
-commit_message: "docs: complete coordinator live pilot 2"
----
+transient_paths: uv.lock
 ```
 
-Multiple paths: comma-separated (`a.md, b.md`). `required_paths` ⊆ `allowed_paths`.
+Comma-separated for multiple. Rules: relative exact paths only; no globs; no `..`; no absolute; no directories; no overlap with allowed/required.
 
-## After Executor exit
+## Cleanup contract
 
-1. `git status --porcelain` — authoritative changed paths
-2. Unexpected path ∉ `allowed_paths` → `POSTCONDITION_FAILED`, no commit/push
-3. Missing `required_paths` → `POSTCONDITION_FAILED`
-4. `git diff --check` → must pass
-5. If publication requested and green:
-   - `git add -- <exact paths only>` (**never** `git add .` / `-A`)
-   - `git commit -m "<commit_message>"`
-   - `git push origin HEAD:refs/heads/<target_branch>` (never `main`, never force)
-   - `git ls-remote` must equal local HEAD
+Before Executor: each transient must be **absent** and **untracked**.
 
-## Result fields
+After Executor, a changed path in `transient_paths` is cleanable only if:
 
 ```text
-executor_exit_code
-postconditions_ok
-unexpected_paths
-required_paths_ok
-validation_ok
-commit_created
-local_head
-push_attempted
-remote_head
-publication_verified
-final_status
-elapsed_seconds
-executor_stdout_tail / executor_stderr_tail (<= 32 KiB each)
-executor_log_path
+absent before
+untracked before
+untracked after (??)
+regular file (not symlink/dir)
+exact path match
 ```
 
-## Modes
+Then: SHA256 evidence → `Path.unlink()` → `git status` again must show no leftover transient and no new unexpected paths.
 
-| Mode | Behavior |
-| --- | --- |
-| `shadow` | Report only; no claim write for wait; no Cursor; no publication |
-| `launch` | Claim + one Executor + postconditions + optional publication |
+Then: normal v0.2 postconditions + exact-path commit/push. Transients never staged.
 
-## First pilot failure (regression)
+## Audit fields
 
-Required report + unexpected `uv.lock` + exit 0 → Coordinator must **not** commit/push.
+```text
+declared_transient_paths
+transient_paths_observed
+transient_paths_cleaned
+transient_cleanup_verified
+transient_sha256
+```
 
-## Hosted CI
+## Opt-in only
 
-Still a final merge-candidate gate only. Coordinator never creates PRs or dispatches Actions.
+Without `transient_paths`, pilot #2 style `uv.lock` remains `POSTCONDITION_FAILED`.
+
+Do **not** add `uv.lock` to `.gitignore` or `allowed_paths` for this.

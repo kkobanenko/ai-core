@@ -78,6 +78,8 @@ class BridgePrompt:
     publication_commit: bool = False
     publication_push: bool = False
     commit_message: Optional[str] = None
+    # v0.2.1: явно объявленные disposable tool side-effects.
+    transient_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -119,3 +121,9 @@ class RunResult:
     executor_stdout_tail: Optional[str] = None
     executor_stderr_tail: Optional[str] = None
     executor_log_path: Optional[str] = None
+    # v0.2.1 transient auditability
+    declared_transient_paths: tuple[str, ...] = ()
+    transient_paths_observed: tuple[str, ...] = ()
+    transient_paths_cleaned: tuple[str, ...] = ()
+    transient_cleanup_verified: Optional[bool] = None
+    transient_sha256: Optional[dict] = None
