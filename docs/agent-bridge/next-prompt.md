@@ -1,26 +1,25 @@
-# WAIT — authoritative S1-start gate review
+# WAIT — review AI Core S1 draft PR #6
 
 Do not continue automatically.
 
-Current authoritative state:
+Review target:
 
-- platform-control PR #295 is merged;
-- authoritative platform-control main is
+- PR: https://github.com/kkobanenko/ai-core/pull/6
+- state: `OPEN`, `DRAFT`, `MERGEABLE`;
+- base: `7569441c18362cfd15524ad73f56f7f35580c86f`;
+- head: `f73a77706ab88c11ce01066c9b6c92406975da1f`;
+- exact-head Python 3.12 CI run `34572528885`: green;
+- platform-control authoritative main:
   `c78b5e735d9b47e6550f2f6f7df084406c3ecfe0`;
-- reviewed head and main trees are identical;
-- S1 start is true only for `S1_foundation_contracts`;
-- broad AI Core implementation authorization remains false;
-- authoritative-main Infrastructure CI run `34534103678` is green;
-- AI Core main remains `7569441c18362cfd15524ad73f56f7f35580c86f`;
-- no S1 source work has started.
+- local Python 3.10 suite: 71 passed;
+- characterization: 77 passed;
+- nine pinned consumers: verified.
 
-Wait for operator/ChatGPT verification and a new explicit instruction to start
-S1 foundation-contract source work.
-
-If instructed to start S1, fetch both mains again and create a fresh isolated
-AI Core branch from `ai-core/main@7569441c...`. Do not base it on PR #3-#5.
+Wait for external architecture/governance review and a new explicit operator
+instruction. PR #6 must not be merged without separate authorization naming
+the unchanged exact head/base and green CI.
 
 Still forbidden: runtime, service, transports/provider calls, executor,
 retry/fallback execution, consumer changes, aliases/routing/health/deadline
 implementation, new provider identities, `STT_SEGMENTS`, GPU trust promotion,
-infrastructure/deployment, release/tag, and merge of any future AI Core S1 PR.
+infrastructure/deployment, release/tag, and changes to PR #3-#5.
