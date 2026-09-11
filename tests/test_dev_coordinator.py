@@ -554,3 +554,452 @@ def test_concurrent_coordinators_at_most_one_launch(tmp_path: Path):
     launched = sum(1 for r in results if r.executor_launched)
     assert launched == 1
     assert len(launches) == 1
+
+
+# --- v0.2 publication / postconditions ---
+
+from tools.dev_coordinator.models import FinalStatus
+from tools.dev_coordinator.publication import (
+    evaluate_postconditions,
+    parse_porcelain_paths,
+    publish_exact_paths,
+)
+
+
+REPORT = "docs/handoffs/2026-09-12-coordinator-live-pilot-2.md"
+
+
+def _ready_pub(executor_path: str, **extra: object) -> str:
+    fields = {
+        "coord_version": 1,
+        "state": "EXECUTOR_READY",
+        "prompt_id": "pilot2-001",
+        "target_repo": "kkobanenko/ai-core",
+        "target_branch": "docs/coordinator-live-pilot-readme-audit-20260911",
+        "target_worktree": executor_path,
+        "base_sha": "abc123def456",
+        "hosted_ci": "forbidden",
+        "max_executor_runs": 1,
+        "allowed_paths": REPORT,
+        "required_paths": REPORT,
+        "publication_commit": "true",
+        "publication_push": "true",
+        "commit_message": "docs: complete coordinator live pilot 2",
+    }
+    fields.update(extra)
+    lines = ["---"]
+    for key, value in fields.items():
+        if value is None:
+            continue
+        lines.append(f"{key}: {value}")
+    lines.append("---")
+    lines.append("")
+    lines.append("body")
+    return "\n".join(lines)
+
+
+def test_parse_porcelain_paths():
+    text = "?? uv.lock\n?? docs/handoffs/x.md\n M README.md\n"
+    paths = parse_porcelain_paths(text)
+    assert "uv.lock" in paths
+    assert "docs/handoffs/x.md" in paths
+    assert "README.md" in paths
+
+
+def test_publication_requires_paths_when_commit_true():
+    text = _meta(
+        "EXECUTOR_READY",
+        publication_commit=True,
+        publication_push=False,
+        commit_message="x",
+    )
+    prompt = parse_next_prompt(text)
+    assert prompt.parse_error is not None
+    assert "allowed_paths" in prompt.parse_error
+
+
+def test_pilot1_regression_unexpected_uv_lock(tmp_path: Path):
+    """Fake Executor: required report + unexpected uv.lock, exit 0 → no commit/push."""
+    state = tmp_path / "coord-state"
+    executor = tmp_path / "executor-wt"
+    bridge = tmp_path / "bridge-wt"
+    executor.mkdir()
+    bridge.mkdir()
+    (executor / "AGENTS.md").write_text("gov", encoding="utf-8")
+
+    report_rel = "docs/handoffs/2026-09-11-coordinator-live-pilot-readme-audit.md"
+    meta = _ready_pub(
+        str(executor),
+        prompt_id="pilot1-regression",
+        allowed_paths=report_rel,
+        required_paths=report_rel,
+        commit_message="docs: audit README against S1 main state",
+    )
+    prompt_file = bridge / "docs" / "agent-bridge" / "next-prompt.md"
+    prompt_file.parent.mkdir(parents=True)
+    prompt_file.write_text(meta, encoding="utf-8")
+
+    def fake_runner(args, cwd):
+        # Создаём required + unexpected, как в первом live-pilot.
+        report = Path(cwd) / report_rel
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text("# audit\n", encoding="utf-8")
+        (Path(cwd) / "uv.lock").write_text("# unexpected\n", encoding="utf-8")
+        return 0, "fake executor ok", ""
+
+    def git(args, cwd):
+        cmd = list(args)
+        cwd_s = str(cwd)
+        if cmd[:2] == ["branch", "--show-current"]:
+            if "bridge" in cwd_s:
+                return 0, "test/bridge\n", ""
+            return 0, "docs/coordinator-live-pilot-readme-audit-20260911\n", ""
+        if cmd[:2] == ["rev-parse", "HEAD"]:
+            if "bridge" in cwd_s:
+                return 0, "bridgehead001\n", ""
+            return 0, "abc123def456\n", ""
+        if cmd == ["rev-parse", "--is-inside-work-tree"]:
+            return 0, "true\n", ""
+        if cmd[:2] == ["status", "--porcelain"]:
+            # Pre-launch safety: clean. Post-launch: report + uv.lock.
+            if (Path(cwd) / "uv.lock").exists():
+                return 0, f"?? {report_rel}\n?? uv.lock\n", ""
+            return 0, "", ""
+        if cmd[:3] == ["remote", "get-url", "origin"]:
+            return 0, "git@github.com:kkobanenko/ai-core.git\n", ""
+        if cmd[:2] == ["ls-remote", "origin"]:
+            tip = "bridgehead001" if "bridge" in cwd_s else "abc123def456"
+            return 0, f"{tip}\t{cmd[2]}\n", ""
+        if cmd[:2] == ["diff", "--check"]:
+            return 0, "", ""
+        if cmd[0] == "add":
+            raise AssertionError(f"git add must not run on postcondition fail: {cmd}")
+        if cmd[0] == "commit":
+            raise AssertionError("git commit must not run")
+        if cmd[0] == "push":
+            raise AssertionError("git push must not run")
+        return 1, "", f"unexpected: {cmd}"
+
+    result = run_once(
+        mode="launch",
+        repo_root=tmp_path,
+        executor_worktree=executor,
+        bridge_prompt_path=prompt_file,
+        bridge_worktree=bridge,
+        state_dir=state,
+        git_runner=git,
+        executor_runner=fake_runner,
+        agent_bin="fake-agent",
+    )
+    assert result.executor_exit_code == 0
+    assert result.postconditions_ok is False
+    assert "uv.lock" in result.unexpected_paths
+    assert result.commit_created is False
+    assert result.push_attempted is False
+    assert result.final_status == FinalStatus.POSTCONDITION_FAILED
+
+
+def test_happy_path_exact_add_commit_push(tmp_path: Path):
+    state = tmp_path / "coord-state"
+    executor = tmp_path / "executor-wt"
+    bridge = tmp_path / "bridge-wt"
+    executor.mkdir()
+    bridge.mkdir()
+    (executor / "AGENTS.md").write_text("gov", encoding="utf-8")
+
+    meta = _ready_pub(str(executor))
+    prompt_file = bridge / "docs" / "agent-bridge" / "next-prompt.md"
+    prompt_file.parent.mkdir(parents=True)
+    prompt_file.write_text(meta, encoding="utf-8")
+
+    git_cmds = []
+
+    def fake_runner(args, cwd):
+        report = Path(cwd) / REPORT
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text("# pilot2\n", encoding="utf-8")
+        return 0, "ok", ""
+
+    def git(args, cwd):
+        cmd = list(args)
+        git_cmds.append(tuple(cmd))
+        cwd_s = str(cwd)
+        if cmd[:2] == ["branch", "--show-current"]:
+            if "bridge" in cwd_s:
+                return 0, "test/bridge\n", ""
+            return 0, "docs/coordinator-live-pilot-readme-audit-20260911\n", ""
+        if cmd[:2] == ["rev-parse", "HEAD"]:
+            if "bridge" in cwd_s:
+                return 0, "bridgehead001\n", ""
+            # After commit, HEAD becomes newsha.
+            if any(c[0] == "commit" for c in git_cmds[:-1]):
+                return 0, "newsha001\n", ""
+            return 0, "abc123def456\n", ""
+        if cmd == ["rev-parse", "--is-inside-work-tree"]:
+            return 0, "true\n", ""
+        if cmd[:2] == ["status", "--porcelain"]:
+            if (Path(cwd) / REPORT).exists():
+                return 0, f"?? {REPORT}\n", ""
+            return 0, "", ""
+        if cmd[:3] == ["remote", "get-url", "origin"]:
+            return 0, "git@github.com:kkobanenko/ai-core.git\n", ""
+        if cmd[:2] == ["ls-remote", "origin"]:
+            if "bridge" in cwd_s:
+                return 0, "bridgehead001\trefs/heads/test/bridge\n", ""
+            # After push verify.
+            if any(c[0] == "push" for c in git_cmds[:-1]):
+                return 0, "newsha001\trefs/heads/docs/coordinator-live-pilot-readme-audit-20260911\n", ""
+            return 0, "abc123def456\trefs/heads/x\n", ""
+        if cmd[:2] == ["diff", "--check"] or cmd[:3] == ["diff", "--cached", "--check"]:
+            return 0, "", ""
+        if cmd[0] == "add":
+            assert cmd[1] == "--"
+            assert "." not in cmd
+            assert "-A" not in cmd
+            assert REPORT in cmd
+            return 0, "", ""
+        if cmd[0] == "commit":
+            return 0, "", ""
+        if cmd[0] == "push":
+            assert "force" not in " ".join(cmd).lower()
+            assert "main" not in cmd[-1]
+            return 0, "", ""
+        return 1, "", f"unexpected: {cmd}"
+
+    result = run_once(
+        mode="launch",
+        repo_root=tmp_path,
+        executor_worktree=executor,
+        bridge_prompt_path=prompt_file,
+        bridge_worktree=bridge,
+        state_dir=state,
+        git_runner=git,
+        executor_runner=fake_runner,
+        agent_bin="fake-agent",
+    )
+    assert result.executor_exit_code == 0
+    assert result.postconditions_ok is True
+    assert result.commit_created is True
+    assert result.push_attempted is True
+    assert result.publication_verified is True
+    assert result.local_head == "newsha001"
+    assert result.remote_head == "newsha001"
+    assert result.final_status == FinalStatus.WORK_PACKAGE_SUCCESS
+    assert not any(c[0] == "add" and "." in c for c in git_cmds)
+
+
+def test_missing_required_artifact(tmp_path: Path):
+    prompt = parse_next_prompt(_ready_pub(str(tmp_path)))
+    # Файла нет; porcelain пустой/без report.
+
+    def git(args, cwd):
+        cmd = list(args)
+        if cmd[:2] == ["status", "--porcelain"]:
+            return 0, "", ""
+        if cmd[:2] == ["diff", "--check"]:
+            return 0, "", ""
+        return 1, "", "unexpected"
+
+    post = evaluate_postconditions(prompt, executor_worktree=tmp_path, git_runner=git)
+    assert post.ok is False
+    assert post.required_paths_ok is False
+    assert post.final_status == FinalStatus.POSTCONDITION_FAILED
+
+
+def test_unexpected_tracked_file(tmp_path: Path):
+    prompt = parse_next_prompt(_ready_pub(str(tmp_path)))
+    report = tmp_path / REPORT
+    report.parent.mkdir(parents=True)
+    report.write_text("ok", encoding="utf-8")
+
+    def git(args, cwd):
+        cmd = list(args)
+        if cmd[:2] == ["status", "--porcelain"]:
+            return 0, f"A  {REPORT}\n M README.md\n", ""
+        if cmd[:2] == ["diff", "--check"]:
+            return 0, "", ""
+        return 1, "", "unexpected"
+
+    post = evaluate_postconditions(prompt, executor_worktree=tmp_path, git_runner=git)
+    assert post.ok is False
+    assert "README.md" in post.unexpected_paths
+
+
+def test_diff_check_failure(tmp_path: Path):
+    prompt = parse_next_prompt(_ready_pub(str(tmp_path)))
+    report = tmp_path / REPORT
+    report.parent.mkdir(parents=True)
+    report.write_text("ok", encoding="utf-8")
+
+    def git(args, cwd):
+        cmd = list(args)
+        if cmd[:2] == ["status", "--porcelain"]:
+            return 0, f"?? {REPORT}\n", ""
+        if cmd[:2] == ["diff", "--check"]:
+            return 2, "whitespace error\n", ""
+        return 1, "", "unexpected"
+
+    post = evaluate_postconditions(prompt, executor_worktree=tmp_path, git_runner=git)
+    assert post.ok is False
+    assert post.final_status == FinalStatus.VALIDATION_FAILED
+
+
+def test_refuse_publish_to_main(tmp_path: Path):
+    text = _ready_pub(str(tmp_path), target_branch="main")
+    prompt = parse_next_prompt(text)
+    pub = publish_exact_paths(
+        prompt,
+        executor_worktree=tmp_path,
+        paths_to_stage=[REPORT],
+        git_runner=lambda a, c: (0, "", ""),
+    )
+    assert pub.commit_created is False
+    assert "main" in pub.reason
+
+
+def test_commit_failure(tmp_path: Path):
+    prompt = parse_next_prompt(_ready_pub(str(tmp_path)))
+
+    def git(args, cwd):
+        cmd = list(args)
+        if cmd[0] == "add":
+            return 0, "", ""
+        if cmd[:3] == ["diff", "--cached", "--check"]:
+            return 0, "", ""
+        if cmd[0] == "commit":
+            return 1, "", "commit failed"
+        return 1, "", f"unexpected {cmd}"
+
+    pub = publish_exact_paths(
+        prompt,
+        executor_worktree=tmp_path,
+        paths_to_stage=[REPORT],
+        git_runner=git,
+    )
+    assert pub.commit_created is False
+    assert pub.final_status == FinalStatus.PUBLICATION_FAILED
+
+
+def test_push_failure(tmp_path: Path):
+    prompt = parse_next_prompt(_ready_pub(str(tmp_path)))
+
+    def git(args, cwd):
+        cmd = list(args)
+        if cmd[0] == "add":
+            return 0, "", ""
+        if cmd[:3] == ["diff", "--cached", "--check"]:
+            return 0, "", ""
+        if cmd[0] == "commit":
+            return 0, "", ""
+        if cmd[:2] == ["rev-parse", "HEAD"]:
+            return 0, "localsha\n", ""
+        if cmd[0] == "push":
+            return 1, "", "push denied"
+        return 1, "", f"unexpected {cmd}"
+
+    pub = publish_exact_paths(
+        prompt,
+        executor_worktree=tmp_path,
+        paths_to_stage=[REPORT],
+        git_runner=git,
+    )
+    assert pub.commit_created is True
+    assert pub.push_attempted is True
+    assert pub.publication_verified is False
+    assert pub.final_status == FinalStatus.PUBLICATION_FAILED
+
+
+def test_remote_sha_mismatch(tmp_path: Path):
+    prompt = parse_next_prompt(_ready_pub(str(tmp_path)))
+
+    def git(args, cwd):
+        cmd = list(args)
+        if cmd[0] == "add":
+            return 0, "", ""
+        if cmd[:3] == ["diff", "--cached", "--check"]:
+            return 0, "", ""
+        if cmd[0] == "commit":
+            return 0, "", ""
+        if cmd[:2] == ["rev-parse", "HEAD"]:
+            return 0, "localsha\n", ""
+        if cmd[0] == "push":
+            return 0, "", ""
+        if cmd[:2] == ["ls-remote", "origin"]:
+            return 0, "othersha\trefs/heads/x\n", ""
+        return 1, "", f"unexpected {cmd}"
+
+    pub = publish_exact_paths(
+        prompt,
+        executor_worktree=tmp_path,
+        paths_to_stage=[REPORT],
+        git_runner=git,
+    )
+    assert pub.publication_verified is False
+    assert pub.final_status == FinalStatus.PUBLICATION_UNVERIFIED
+
+
+def test_executor_nonzero_no_publication(tmp_path: Path):
+    state = tmp_path / "coord-state"
+    executor = tmp_path / "executor-wt"
+    bridge = tmp_path / "bridge-wt"
+    executor.mkdir()
+    bridge.mkdir()
+    (executor / "AGENTS.md").write_text("gov", encoding="utf-8")
+    meta = _ready_pub(str(executor))
+    prompt_file = bridge / "docs" / "agent-bridge" / "next-prompt.md"
+    prompt_file.parent.mkdir(parents=True)
+    prompt_file.write_text(meta, encoding="utf-8")
+
+    def fake_runner(args, cwd):
+        return 7, "", "boom"
+
+    def git(args, cwd):
+        cmd = list(args)
+        cwd_s = str(cwd)
+        if cmd[:2] == ["branch", "--show-current"]:
+            if "bridge" in cwd_s:
+                return 0, "test/bridge\n", ""
+            return 0, "docs/coordinator-live-pilot-readme-audit-20260911\n", ""
+        if cmd[:2] == ["rev-parse", "HEAD"]:
+            if "bridge" in cwd_s:
+                return 0, "bridgehead001\n", ""
+            return 0, "abc123def456\n", ""
+        if cmd == ["rev-parse", "--is-inside-work-tree"]:
+            return 0, "true\n", ""
+        if cmd[:2] == ["status", "--porcelain"]:
+            return 0, "", ""
+        if cmd[:3] == ["remote", "get-url", "origin"]:
+            return 0, "git@github.com:kkobanenko/ai-core.git\n", ""
+        if cmd[:2] == ["ls-remote", "origin"]:
+            tip = "bridgehead001" if "bridge" in cwd_s else "abc123def456"
+            return 0, f"{tip}\trefs/heads/x\n", ""
+        if cmd[0] in ("add", "commit", "push"):
+            raise AssertionError("publication must not run after nonzero exit")
+        return 1, "", f"unexpected {cmd}"
+
+    result = run_once(
+        mode="launch",
+        repo_root=tmp_path,
+        executor_worktree=executor,
+        bridge_prompt_path=prompt_file,
+        bridge_worktree=bridge,
+        state_dir=state,
+        git_runner=git,
+        executor_runner=fake_runner,
+        agent_bin="fake-agent",
+    )
+    assert result.executor_exit_code == 7
+    assert result.commit_created is False
+    assert result.push_attempted is False
+    assert result.final_status == FinalStatus.EXECUTOR_NONZERO
+
+
+def test_compose_prompt_forbids_executor_commit():
+    prompt = parse_next_prompt(READY_META)
+    composed = compose_executor_prompt(
+        governance_text="gov",
+        bridge_prompt=prompt,
+    )
+    assert "MUST NOT" in composed
+    assert "git commit" in composed
+    assert "Coordinator owns these" in composed

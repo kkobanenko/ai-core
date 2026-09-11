@@ -1,4 +1,4 @@
-"""Разбор docs/agent-bridge/next-prompt.md (legacy + metadata) — v0.1.1."""
+"""Разбор docs/agent-bridge/next-prompt.md (legacy + metadata) — v0.2."""
 
 from __future__ import annotations
 
@@ -7,18 +7,15 @@ from typing import Any, Optional
 
 from tools.dev_coordinator.models import BridgePrompt, CoordState
 
-# Front matter: блок между --- в начале файла.
 _FRONT_MATTER_RE = re.compile(
     r"\A---\s*\n(.*?)\n---\s*\n?(.*)\Z",
     re.DOTALL,
 )
 
-# Legacy WAIT: markdown-заголовок "# WAIT".
 _LEGACY_WAIT_RE = re.compile(r"(?m)^\s*#\s+WAIT\s*$")
 
 _KNOWN_STATES = {s.value: s for s in CoordState}
 
-# Обязательные поля для EXECUTOR_READY (все non-empty).
 EXECUTOR_READY_REQUIRED = (
     "coord_version",
     "state",
@@ -30,6 +27,23 @@ EXECUTOR_READY_REQUIRED = (
     "hosted_ci",
     "max_executor_runs",
 )
+
+# Разделитель списков путей в flat metadata (без YAML lists).
+_PATH_SEP = ","
+
+
+def _parse_path_list(value: Any) -> tuple[str, ...]:
+    """Парсит 'a.md, b.md' → ('a.md', 'b.md'). Пустая строка → ()."""
+    if value is None:
+        return ()
+    if not isinstance(value, str):
+        value = str(value)
+    parts = []
+    for item in value.split(_PATH_SEP):
+        item = item.strip()
+        if item:
+            parts.append(item)
+    return tuple(parts)
 
 
 def _parse_simple_yaml_map(text: str) -> dict[str, Any]:
@@ -48,7 +62,6 @@ def _parse_simple_yaml_map(text: str) -> dict[str, Any]:
         value = value.strip()
         if not key:
             raise ValueError(f"empty key in: {raw_line!r}")
-        # v0.1.1: никаких last-value-wins.
         if key in result:
             raise ValueError(f"duplicate metadata key: {key!r}")
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
@@ -70,7 +83,6 @@ def _legacy_wait(text: str) -> bool:
 
 
 def _is_missing(value: Any) -> bool:
-    """None или пустая строка = missing."""
     if value is None:
         return True
     if isinstance(value, str) and value.strip() == "":
@@ -78,8 +90,18 @@ def _is_missing(value: Any) -> bool:
     return False
 
 
+def _empty_pub() -> dict[str, Any]:
+    return {
+        "allowed_paths": (),
+        "required_paths": (),
+        "publication_commit": False,
+        "publication_push": False,
+        "commit_message": None,
+    }
+
+
 def parse_next_prompt(text: str) -> BridgePrompt:
-    """Разобрать текст next-prompt.md (v0.1.1)."""
+    """Разобрать текст next-prompt.md (v0.2)."""
     raw = text if text is not None else ""
     match = _FRONT_MATTER_RE.match(raw)
 
@@ -99,6 +121,7 @@ def parse_next_prompt(text: str) -> BridgePrompt:
                 body=raw,
                 raw_metadata={},
                 parse_error=None,
+                **_empty_pub(),
             )
         return BridgePrompt(
             has_metadata=False,
@@ -114,6 +137,7 @@ def parse_next_prompt(text: str) -> BridgePrompt:
             body=raw,
             raw_metadata={},
             parse_error="legacy next-prompt without metadata and without # WAIT",
+            **_empty_pub(),
         )
 
     fm_text, body = match.group(1), match.group(2)
@@ -134,6 +158,7 @@ def parse_next_prompt(text: str) -> BridgePrompt:
             body=body,
             raw_metadata={},
             parse_error=f"invalid front matter: {exc}",
+            **_empty_pub(),
         )
 
     if "state" not in meta:
@@ -156,7 +181,12 @@ def parse_next_prompt(text: str) -> BridgePrompt:
     if state is None:
         return _meta_error(raw, body, meta, f"unknown state: {state_raw!r}")
 
-    # EXECUTOR_READY: полный обязательный набор non-empty полей.
+    allowed = _parse_path_list(meta.get("allowed_paths"))
+    required = _parse_path_list(meta.get("required_paths"))
+    pub_commit = bool(meta.get("publication_commit", False))
+    pub_push = bool(meta.get("publication_push", False))
+    commit_message = _opt_str(meta.get("commit_message"))
+
     if state == CoordState.EXECUTOR_READY:
         for field in EXECUTOR_READY_REQUIRED:
             if field not in meta or _is_missing(meta.get(field)):
@@ -174,8 +204,35 @@ def parse_next_prompt(text: str) -> BridgePrompt:
         prompt_id = str(meta.get("prompt_id")).strip()
         if not prompt_id:
             return _meta_error(raw, body, meta, "prompt_id must be non-empty")
+
+        # v0.2: если публикация запрошена — пути и сообщение обязательны.
+        if pub_commit or pub_push:
+            if not allowed:
+                return _meta_error(
+                    raw, body, meta, "publication requires non-empty allowed_paths"
+                )
+            if not required:
+                return _meta_error(
+                    raw, body, meta, "publication requires non-empty required_paths"
+                )
+            if pub_commit and not commit_message:
+                return _meta_error(
+                    raw, body, meta, "publication_commit requires commit_message"
+                )
+            # required ⊆ allowed
+            for path in required:
+                if path not in allowed:
+                    return _meta_error(
+                        raw,
+                        body,
+                        meta,
+                        f"required_path not in allowed_paths: {path}",
+                    )
+        if pub_push and not pub_commit:
+            return _meta_error(
+                raw, body, meta, "publication_push requires publication_commit=true"
+            )
     else:
-        # Для WAIT/DONE/… достаточно coord_version+state; max_runs опционален.
         max_runs = meta.get("max_executor_runs", 1)
         if max_runs is not None and (
             not isinstance(max_runs, int) or max_runs < 1
@@ -201,6 +258,11 @@ def parse_next_prompt(text: str) -> BridgePrompt:
         body=body,
         raw_metadata=meta,
         parse_error=None,
+        allowed_paths=allowed,
+        required_paths=required,
+        publication_commit=pub_commit,
+        publication_push=pub_push,
+        commit_message=commit_message,
     )
 
 
@@ -230,4 +292,9 @@ def _meta_error(
         body=body,
         raw_metadata=meta,
         parse_error=message,
+        allowed_paths=_parse_path_list(meta.get("allowed_paths")),
+        required_paths=_parse_path_list(meta.get("required_paths")),
+        publication_commit=bool(meta.get("publication_commit", False)),
+        publication_push=bool(meta.get("publication_push", False)),
+        commit_message=_opt_str(meta.get("commit_message")),
     )

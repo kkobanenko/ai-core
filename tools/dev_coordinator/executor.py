@@ -1,4 +1,4 @@
-"""Сборка промпта и запуск Cursor Agent CLI (ровно один раз)."""
+"""Сборка промпта и запуск Cursor Agent CLI (ровно один раз) — v0.2."""
 
 from __future__ import annotations
 
@@ -9,28 +9,41 @@ from typing import Callable, Optional, Sequence
 
 from tools.dev_coordinator.models import BridgePrompt
 
-# Подмена subprocess в тестах.
 ExecutorRunner = Callable[[Sequence[str], Path], tuple[int, str, str]]
+
+OUTPUT_TAIL_BYTES = 32 * 1024
 
 
 PRESERVE_BRIDGE_INSTRUCTION = """
-## Coordinator v0.1.1 — preserve legacy agent-bridge workflow
+## Coordinator v0.2 — Executor responsibilities
 
 You are the Cursor Executor launched by the deterministic Coordinator.
 
-Preserve the existing Architect ↔ docs/agent-bridge/** ↔ Executor convention:
+### You MUST
+1. Treat the Architect `next-prompt.md` body as the active instruction.
+2. Change only paths allowed by Architect (and Coordinator metadata).
+3. Create required report/artifact files when asked.
+4. Run available local checks that do not require git commit/push.
+5. Finish when implementation/report work is done.
 
-1. Treat `docs/agent-bridge/next-prompt.md` as the active instruction.
-2. Do not reinterpret Architect requirements; follow them literally.
-3. After work, update `docs/agent-bridge/latest-report.md` and archive under
-   `docs/agent-bridge/reports/` / `docs/agent-bridge/prompts/` as usual.
-4. Do not create hosted CI workflows, PRs for CI, or workflow_dispatch.
-5. Coordinator does not take over commit/push/report publication in v0.1 —
-   continue the existing Executor ownership for those steps unless the prompt
-   says otherwise.
+### You MUST NOT (Coordinator owns these)
+1. `git commit`
+2. `git push`
+3. Create pull requests
+4. Create/delete/rename remote branches
+5. Trigger hosted CI / workflow_dispatch
+6. Force-push or touch `main`
+
+If shell/git tools are unavailable or rejected: still write the allowed files
+you can create with your edit tools, then exit. The Coordinator will inspect
+the real worktree (`git status`) and perform exact-path commit/push itself.
+
+### Reporting
+Do not rely on updating `docs/agent-bridge/**` unless the Architect prompt
+explicitly requires it. Prefer the artifact path declared in the prompt.
 
 Repository governance (`AGENTS.md`, `.cursor/rules/**`, platform-control) wins
-over bridge text on conflicts; record conflicts in the report.
+on conflicts with bridge text.
 """.strip()
 
 
@@ -40,11 +53,7 @@ def compose_executor_prompt(
     bridge_prompt: BridgePrompt,
     coordinator_note: str = "",
 ) -> str:
-    """Собрать промпт Executor без переинтерпретации требований Architect.
-
-    governance_text должен быть из executor_worktree (authoritative).
-    coordinator_note — опциональный явный блок transition tooling, не governance.
-    """
+    """Собрать промпт Executor без переинтерпретации требований Architect."""
     parts = [
         "# Repository governance (from executor_worktree)\n\n"
         + governance_text.strip(),
@@ -54,11 +63,31 @@ def compose_executor_prompt(
             "# Coordinator tooling note (non-authoritative)\n\n"
             + coordinator_note.strip()
         )
+    if bridge_prompt.allowed_paths:
+        parts.append(
+            "# Allowed paths (Coordinator metadata)\n\n"
+            + "\n".join(f"- {p}" for p in bridge_prompt.allowed_paths)
+        )
+    if bridge_prompt.required_paths:
+        parts.append(
+            "# Required artifacts (Coordinator metadata)\n\n"
+            + "\n".join(f"- {p}" for p in bridge_prompt.required_paths)
+        )
     parts.append(
         "# Active next-prompt.md (full)\n\n" + bridge_prompt.raw_text.strip()
     )
     parts.append(PRESERVE_BRIDGE_INSTRUCTION)
     return "\n\n---\n\n".join(parts) + "\n"
+
+
+def tail_text(text: str, max_bytes: int = OUTPUT_TAIL_BYTES) -> str:
+    """Хвост текста ≤ max_bytes (UTF-8 safe truncation)."""
+    raw = (text or "").encode("utf-8")
+    if len(raw) <= max_bytes:
+        return text or ""
+    chunk = raw[-max_bytes:]
+    # Обрезать возможный битый leading UTF-8 символ.
+    return chunk.decode("utf-8", errors="ignore")
 
 
 def _default_runner(args: Sequence[str], cwd: Path) -> tuple[int, str, str]:
@@ -74,8 +103,6 @@ def _default_runner(args: Sequence[str], cwd: Path) -> tuple[int, str, str]:
 
 @dataclass(frozen=True)
 class LaunchOutcome:
-    """Результат одного запуска agent CLI."""
-
     argv: tuple[str, ...]
     exit_code: int
     stdout: str
@@ -89,11 +116,6 @@ def build_agent_argv(
     agent_bin: str = "agent",
     trust: bool = True,
 ) -> list[str]:
-    """Собрать argv для Cursor headless CLI.
-
-    Проверено локально: `agent -p/--print` печатает ответ и имеет доступ к tools.
-    Промпт передаётся позиционным аргументом. Не выдумываем неизвестные флаги.
-    """
     argv = [agent_bin, "--print", "--workspace", str(workspace)]
     if trust:
         argv.append("--trust")

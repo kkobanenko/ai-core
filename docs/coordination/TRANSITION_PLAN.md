@@ -1,7 +1,7 @@
 # Transition Plan — Coordinator v0.1 + Spec Kit (gradual)
 
-Status: **transitional**  
-Date: 2026-09-11  
+Status: **transitional**
+Date: 2026-09-11
 Branch intent: `chore/coordinator-transition-v0.1-20260911`
 
 ## Non-negotiable
@@ -68,11 +68,11 @@ Human says "Твой ход"
 - Dirty worktree, branch/SHA mismatch, missing declared worktree → `HUMAN_REQUIRED`.
 - Hosted CI is never used as an iteration mechanism (see quota policy doc).
 
-## Out of scope for v0.1
+## Ownership evolution
 
-- AI agent / LLM inside Coordinator
-- Redis, Celery, DB, web UI, daemon loops
-- Endless autonomous executor loops
-- Creating or waiting on GitHub Actions / PRs
-- Changing `src/ai_core/**` public API
-- Resolving platform-control `pending_decision` values
+```text
+v0.1:   Executor owned edit + commit + push
+v0.1.1: live-pilot-ready safety (claim/lock/bridge/repo)
+v0.2:   Executor owns bounded edits; Coordinator owns
+        postcondition validation + exact-path commit/push/verify
+```

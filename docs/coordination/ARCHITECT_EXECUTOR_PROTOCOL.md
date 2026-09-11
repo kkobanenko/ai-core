@@ -1,72 +1,41 @@
-# Architect ↔ Executor protocol (transitional, Coordinator v0.1.1)
+# Architect ↔ Executor protocol (Coordinator v0.2)
 
 ## Authoritative channel
 
-Until Architect explicitly retires it, the control channel is:
-
-```text
-docs/agent-bridge/
-  next-prompt.md      ← Architect / operator instruction (active)
-  latest-report.md    ← Executor report (active)
-  prompts/            ← archived instructions
-  reports/            ← archived reports
-  README.md           ← bridge conventions
-```
-
-Governance truth still lives in `AGENTS.md`, `.cursor/rules/**` (of the
-**executor worktree**), and platform-control.
-
-## Transitional loop (v0.1.1)
-
-1. Architect writes `next-prompt.md` (legacy `# WAIT` **or** Coordinator metadata).
-2. Human runs Coordinator (`shadow` first; `launch` only when authorized).
-3. Coordinator:
-   - verifies bridge **source** (`--bridge-worktree` + prompt path + git + remote tip);
-   - evaluates state;
-   - for `EXECUTOR_READY`: process lock → **atomic claim** → launch Cursor once;
-   - stops (no loop).
-4. Executor continues the same report/archive convention.
-5. Re-invocation with the **same** ready identity does **not** launch again.
-
-## Coordinator metadata
-
-```yaml
----
-coord_version: 1
-state: EXECUTOR_READY
-prompt_id: s2a-implementation-001
-target_repo: kkobanenko/ai-core
-target_branch: feat/...
-target_worktree: /path/to/isolated/worktree
-base_sha: ...
-hosted_ci: forbidden
-max_executor_runs: 1
----
-```
-
-### Required for `EXECUTOR_READY`
-
-All of: `coord_version`, `state`, `prompt_id`, `target_repo`, `target_branch`,
-`target_worktree`, `base_sha`, `hosted_ci`, `max_executor_runs` — **non-empty**.
-
-Duplicate YAML keys → parse error (fail closed).
-
-### Other states
-
-`WAIT` / `DONE` / … may use a shorter metadata block (`coord_version` + `state`).
-
-Legacy `# WAIT` without front matter → no action, exit cleanly.
+`docs/agent-bridge/**` remains the Architect control channel during transition.
 
 ## Ownership
 
-| Concern | v0.1.1 owner |
+| Concern | Owner |
 | --- | --- |
-| Start gate + exactly-once claim + process lock | Coordinator |
-| Implement / commit / push / publish report | Executor (legacy) |
-| Architecture decisions | Architect / human |
-| Hosted CI as merge gate | Humans / policy — never iteration |
+| Architecture / prompt | Architect |
+| Bounded file edits + required artifacts | Cursor Executor |
+| Postcondition validation (real `git status`) | Coordinator |
+| Exact-path `git add` / `commit` / `push` / remote verify | Coordinator |
+| Hosted CI as merge gate | Humans / policy |
 
-## Explicit non-goals (still)
+```text
+v0.1: Executor owned edit + commit + push
+v0.2: Executor owns bounded edits; Coordinator owns publication
+```
 
-No polling daemon, no automatic Architect, no PR/Actions ownership, no systemd,
-no reclaim-by-timeout, no commit/push takeover (candidate for v0.2).
+## Executor rules (v0.2)
+
+Executor **must not** be required to commit/push. If shell/git tools are rejected,
+it should still write allowed files and exit; Coordinator inspects the worktree.
+
+## Coordinator publication contract
+
+See runbook for flat metadata fields:
+
+`allowed_paths`, `required_paths`, `publication_commit`, `publication_push`, `commit_message`.
+
+Unexpected paths (example from pilot #1: `uv.lock`) → fail closed, no auto-delete.
+
+## Exactly-once + lock
+
+Unchanged from v0.1.1: persistent claim + `fcntl.flock` singleton under XDG state.
+
+## Non-goals
+
+No daemon loop, no PR creation, no Actions dispatch, no reclaim-by-timeout, no S2A.

@@ -1,4 +1,4 @@
-"""Модели состояния Coordinator v0.1."""
+"""Модели состояния Coordinator v0.2."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 
 class CoordState(str, Enum):
-    """Разрешённые состояния v0.1."""
+    """Разрешённые состояния."""
 
     WAIT = "WAIT"
     EXECUTOR_READY = "EXECUTOR_READY"
@@ -27,7 +27,22 @@ class Action(str, Enum):
     FAIL_CLOSED = "FAIL_CLOSED"
 
 
-# Состояния, при которых запуск Executor запрещён явно.
+class FinalStatus(str, Enum):
+    """Итоговый статус work package (не путать с exit code Executor)."""
+
+    SHADOW_OK = "SHADOW_OK"
+    WAIT_OK = "WAIT_OK"
+    FAIL_CLOSED = "FAIL_CLOSED"
+    HUMAN_REQUIRED = "HUMAN_REQUIRED"
+    EXECUTOR_PROCESS_EXITED_ZERO = "EXECUTOR_PROCESS_EXITED_ZERO"
+    EXECUTOR_NONZERO = "EXECUTOR_NONZERO"
+    POSTCONDITION_FAILED = "POSTCONDITION_FAILED"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+    PUBLICATION_FAILED = "PUBLICATION_FAILED"
+    PUBLICATION_UNVERIFIED = "PUBLICATION_UNVERIFIED"
+    WORK_PACKAGE_SUCCESS = "WORK_PACKAGE_SUCCESS"
+
+
 NO_LAUNCH_STATES = frozenset(
     {
         CoordState.WAIT,
@@ -44,43 +59,35 @@ NO_LAUNCH_STATES = frozenset(
 class BridgePrompt:
     """Разобранный next-prompt.md."""
 
-    # Есть ли YAML front matter с coord_version.
     has_metadata: bool
-    # Распознанное состояние (или None при fail-closed до нормализации).
     state: Optional[CoordState]
-    # Идентификатор промпта из метаданных (может отсутствовать у legacy).
     prompt_id: Optional[str]
-    # Целевой репозиторий / ветка / worktree / base SHA из метаданных.
     target_repo: Optional[str]
     target_branch: Optional[str]
     target_worktree: Optional[str]
     base_sha: Optional[str]
-    # Политика hosted CI из метаданных (например forbidden).
     hosted_ci: Optional[str]
-    # Жёсткий лимит запусков Executor на одну оценку.
     max_executor_runs: int
-    # Полный текст файла (включая front matter), без переинтерпретации.
     raw_text: str
-    # Тело промпта после front matter (для Executor).
     body: str
-    # Сырые поля front matter (для отладки / отчёта).
     raw_metadata: dict[str, Any] = field(default_factory=dict)
-    # Причина fail-closed при разборе (если есть).
     parse_error: Optional[str] = None
+    # v0.2 publication contract (flat fields).
+    allowed_paths: tuple[str, ...] = ()
+    required_paths: tuple[str, ...] = ()
+    publication_commit: bool = False
+    publication_push: bool = False
+    commit_message: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class SafetyReport:
-    """Результат проверок безопасности перед launch."""
-
     ok: bool
     reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class Decision:
-    """Итог одной оценки Coordinator."""
-
     action: Action
     state: Optional[CoordState]
     reason: str
@@ -91,10 +98,24 @@ class Decision:
 
 @dataclass(frozen=True)
 class RunResult:
-    """Результат одного вызова Coordinator (--once)."""
+    """Результат одного вызова Coordinator (--once) — v0.2."""
 
     mode: str
     decision: Decision
     executor_launched: bool
     executor_exit_code: Optional[int]
     messages: tuple[str, ...]
+    final_status: FinalStatus = FinalStatus.FAIL_CLOSED
+    postconditions_ok: Optional[bool] = None
+    unexpected_paths: tuple[str, ...] = ()
+    required_paths_ok: Optional[bool] = None
+    validation_ok: Optional[bool] = None
+    commit_created: bool = False
+    local_head: Optional[str] = None
+    push_attempted: bool = False
+    remote_head: Optional[str] = None
+    publication_verified: bool = False
+    elapsed_seconds: Optional[float] = None
+    executor_stdout_tail: Optional[str] = None
+    executor_stderr_tail: Optional[str] = None
+    executor_log_path: Optional[str] = None

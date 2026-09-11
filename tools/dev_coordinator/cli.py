@@ -1,23 +1,35 @@
-"""CLI Coordinator v0.1.1: --mode shadow|launch --once + claim/lock/bridge."""
+"""CLI Coordinator v0.2: launch + postconditions + deterministic publication."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import sys
+import time
 from pathlib import Path
 from typing import Optional, Sequence
+import sys
 
 from tools.dev_coordinator.claim import try_acquire_claim
 from tools.dev_coordinator.decision import decide
 from tools.dev_coordinator.executor import (
     compose_executor_prompt,
     launch_executor_once,
+    tail_text,
 )
 from tools.dev_coordinator.locks import ProcessLock
-from tools.dev_coordinator.models import Action, CoordState, Decision, RunResult
+from tools.dev_coordinator.models import (
+    Action,
+    CoordState,
+    Decision,
+    FinalStatus,
+    RunResult,
+)
 from tools.dev_coordinator.parse import parse_next_prompt
-from tools.dev_coordinator.paths import default_state_dir
+from tools.dev_coordinator.paths import default_state_dir, ensure_state_layout
+from tools.dev_coordinator.publication import (
+    evaluate_postconditions,
+    publish_exact_paths,
+)
 from tools.dev_coordinator.safety import (
     GitRunner,
     _default_git_runner,
@@ -33,7 +45,6 @@ def _load_text(path: Path) -> str:
 
 
 def load_executor_governance(executor_worktree: Path) -> str:
-    """Authoritative governance из exact executor worktree (не stale primary)."""
     chunks: list[str] = []
     agents = executor_worktree / "AGENTS.md"
     if agents.is_file():
@@ -51,73 +62,49 @@ def load_executor_governance(executor_worktree: Path) -> str:
     return "\n\n".join(chunks)
 
 
+def _save_executor_log(
+    state_dir: Path, prompt_id: Optional[str], stdout: str, stderr: str
+) -> Optional[str]:
+    ensure_state_layout(state_dir)
+    log_dir = state_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    safe_id = (prompt_id or "unknown").replace("/", "_")[:80]
+    path = log_dir / f"{safe_id}-{int(time.time())}.log"
+    try:
+        path.write_text(
+            "=== stdout ===\n"
+            + tail_text(stdout)
+            + "\n\n=== stderr ===\n"
+            + tail_text(stderr)
+            + "\n",
+            encoding="utf-8",
+        )
+        return str(path)
+    except OSError:
+        return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dev_coordinator",
         description=(
-            "Deterministic Coordinator v0.1.1 over docs/agent-bridge. "
-            "Default mode is shadow (no mutations)."
+            "Deterministic Coordinator v0.2 over docs/agent-bridge. "
+            "Owns postcondition validation + exact-path commit/push."
         ),
     )
-    parser.add_argument(
-        "--mode",
-        choices=("shadow", "launch"),
-        default="shadow",
-        help="shadow=report only (default); launch=may start Cursor once",
-    )
-    parser.add_argument(
-        "--once",
-        action="store_true",
-        default=True,
-        help="Evaluate once and exit (default; endless loops not implemented)",
-    )
-    parser.add_argument(
-        "--repo-root",
-        type=Path,
-        default=None,
-        help="Primary AI Core checkout (default: cwd). Not silently switched.",
-    )
-    parser.add_argument(
-        "--executor-worktree",
-        type=Path,
-        default=None,
-        help="Worktree where Executor may run (defaults to --repo-root)",
-    )
-    parser.add_argument(
-        "--bridge-worktree",
-        type=Path,
-        default=None,
-        help="Git worktree that owns the active agent-bridge (required for launch)",
-    )
-    parser.add_argument(
-        "--bridge-prompt",
-        type=Path,
-        default=None,
-        help=(
-            "Path to next-prompt.md "
-            "(default: <bridge-worktree or repo>/docs/agent-bridge/next-prompt.md)"
-        ),
-    )
-    parser.add_argument(
-        "--state-dir",
-        type=Path,
-        default=None,
-        help="Override Coordinator state dir (claims/locks); default XDG state",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Print machine-readable JSON result",
-    )
-    parser.add_argument(
-        "--agent-bin",
-        default="agent",
-        help="Cursor Agent CLI binary (default: agent)",
-    )
+    parser.add_argument("--mode", choices=("shadow", "launch"), default="shadow")
+    parser.add_argument("--once", action="store_true", default=True)
+    parser.add_argument("--repo-root", type=Path, default=None)
+    parser.add_argument("--executor-worktree", type=Path, default=None)
+    parser.add_argument("--bridge-worktree", type=Path, default=None)
+    parser.add_argument("--bridge-prompt", type=Path, default=None)
+    parser.add_argument("--state-dir", type=Path, default=None)
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--agent-bin", default="agent")
     parser.add_argument(
         "--allow-dirty",
         action="store_true",
-        help="DEBUG/shadow only; launch+allow-dirty fails closed in v0.1.1",
+        help="DEBUG/shadow only; launch+allow-dirty fails closed",
     )
     return parser
 
@@ -136,10 +123,30 @@ def run_once(
     git_runner: Optional[GitRunner] = None,
     executor_runner=None,
 ) -> RunResult:
-    """Одна оценка (+ опциональный launch с claim/lock)."""
+    """Одна оценка + optional launch + postconditions + publication."""
+    t0 = time.monotonic()
     messages: list[str] = []
     runner = git_runner or _default_git_runner
     state = (state_dir or default_state_dir()).resolve()
+
+    def _elapsed() -> float:
+        return round(time.monotonic() - t0, 3)
+
+    def _early(
+        decision: Decision,
+        final: FinalStatus,
+        **extra,
+    ) -> RunResult:
+        return RunResult(
+            mode=mode,
+            decision=decision,
+            executor_launched=False,
+            executor_exit_code=None,
+            messages=tuple(messages + [decision.reason]),
+            final_status=final,
+            elapsed_seconds=_elapsed(),
+            **extra,
+        )
 
     if not bridge_prompt_path.is_file():
         decision = Decision(
@@ -149,30 +156,17 @@ def run_once(
             would_launch=False,
             mutations=(),
         )
-        return RunResult(
-            mode=mode,
-            decision=decision,
-            executor_launched=False,
-            executor_exit_code=None,
-            messages=(decision.reason,),
-        )
+        return _early(decision, FinalStatus.FAIL_CLOSED)
 
-    # launch требует явный bridge-worktree.
     if mode == "launch" and bridge_worktree is None:
         decision = Decision(
             action=Action.FAIL_CLOSED,
             state=CoordState.HUMAN_REQUIRED,
-            reason="--bridge-worktree is required for launch mode in v0.1.1",
+            reason="--bridge-worktree is required for launch mode",
             would_launch=False,
             mutations=(),
         )
-        return RunResult(
-            mode=mode,
-            decision=decision,
-            executor_launched=False,
-            executor_exit_code=None,
-            messages=(decision.reason,),
-        )
+        return _early(decision, FinalStatus.FAIL_CLOSED)
 
     text = _load_text(bridge_prompt_path)
     prompt = parse_next_prompt(text)
@@ -181,10 +175,8 @@ def run_once(
         f"parse_error={prompt.parse_error!r}"
     )
 
-    # Bridge source verification (когда worktree задан).
     if bridge_worktree is not None:
         expected_repo = prompt.target_repo if prompt.has_metadata else "kkobanenko/ai-core"
-        # Для legacy WAIT expected_repo по умолчанию ai-core.
         if prompt.state == CoordState.WAIT and not prompt.target_repo:
             expected_repo = "kkobanenko/ai-core"
         bridge_report = verify_bridge_source(
@@ -206,13 +198,7 @@ def run_once(
                     mutations=(),
                     safety=bridge_report,
                 )
-                return RunResult(
-                    mode=mode,
-                    decision=decision,
-                    executor_launched=False,
-                    executor_exit_code=None,
-                    messages=tuple(messages + [decision.reason]),
-                )
+                return _early(decision, FinalStatus.HUMAN_REQUIRED)
             messages.append(
                 "bridge verification issues (shadow): "
                 + "; ".join(bridge_report.reasons)
@@ -228,8 +214,23 @@ def run_once(
     )
     messages.append(f"decision action={decision.action.value} reason={decision.reason}")
 
-    executor_launched = False
-    exit_code: Optional[int] = None
+    if mode == "shadow":
+        final = FinalStatus.SHADOW_OK
+        if prompt.state == CoordState.WAIT:
+            final = FinalStatus.WAIT_OK
+        elif decision.action == Action.FAIL_CLOSED:
+            final = FinalStatus.FAIL_CLOSED
+        elif decision.state == CoordState.HUMAN_REQUIRED:
+            final = FinalStatus.HUMAN_REQUIRED
+        return RunResult(
+            mode=mode,
+            decision=decision,
+            executor_launched=False,
+            executor_exit_code=None,
+            messages=tuple(messages),
+            final_status=final,
+            elapsed_seconds=_elapsed(),
+        )
 
     if not (
         launch
@@ -237,15 +238,21 @@ def run_once(
         and decision.action == Action.LAUNCH_EXECUTOR
         and decision.would_launch
     ):
+        final = FinalStatus.FAIL_CLOSED
+        if decision.state == CoordState.HUMAN_REQUIRED:
+            final = FinalStatus.HUMAN_REQUIRED
+        elif prompt.state == CoordState.WAIT:
+            final = FinalStatus.WAIT_OK
         return RunResult(
             mode=mode,
             decision=decision,
             executor_launched=False,
             executor_exit_code=None,
             messages=tuple(messages),
+            final_status=final,
+            elapsed_seconds=_elapsed(),
         )
 
-    # --- Live launch path: process lock → claim → fake/real executor ---
     lock = ProcessLock(state_dir=state, non_blocking=True)
     if not lock.acquire():
         decision = Decision(
@@ -255,14 +262,23 @@ def run_once(
             would_launch=False,
             mutations=(),
         )
-        messages.append(decision.reason)
-        return RunResult(
-            mode=mode,
-            decision=decision,
-            executor_launched=False,
-            executor_exit_code=None,
-            messages=tuple(messages),
-        )
+        return _early(decision, FinalStatus.HUMAN_REQUIRED)
+
+    executor_launched = False
+    exit_code: Optional[int] = None
+    stdout_tail: Optional[str] = None
+    stderr_tail: Optional[str] = None
+    log_path: Optional[str] = None
+    post_ok: Optional[bool] = None
+    unexpected: tuple[str, ...] = ()
+    required_ok: Optional[bool] = None
+    validation_ok: Optional[bool] = None
+    commit_created = False
+    local_head: Optional[str] = None
+    push_attempted = False
+    remote_head: Optional[str] = None
+    publication_verified = False
+    final_status = FinalStatus.FAIL_CLOSED
 
     try:
         claim = try_acquire_claim(prompt, state_dir=state)
@@ -284,9 +300,10 @@ def run_once(
                 executor_launched=False,
                 executor_exit_code=None,
                 messages=tuple(messages),
+                final_status=FinalStatus.HUMAN_REQUIRED,
+                elapsed_seconds=_elapsed(),
             )
 
-        # Governance только из executor_worktree.
         governance = load_executor_governance(executor_worktree)
         composed = compose_executor_prompt(
             governance_text=governance,
@@ -300,26 +317,203 @@ def run_once(
         )
         executor_launched = True
         exit_code = outcome.exit_code
+        stdout_tail = tail_text(outcome.stdout)
+        stderr_tail = tail_text(outcome.stderr)
+        log_path = _save_executor_log(
+            state, prompt.prompt_id, outcome.stdout, outcome.stderr
+        )
         messages.append(f"executor exit_code={exit_code}")
-        messages.append("Coordinator stop after single executor observation")
+        if log_path:
+            messages.append(f"executor_log_path={log_path}")
+
+        # Exit 0 ≠ success. Nonzero → no publication.
+        if exit_code != 0:
+            final_status = FinalStatus.EXECUTOR_NONZERO
+            decision = Decision(
+                action=Action.LAUNCH_EXECUTOR,
+                state=CoordState.HUMAN_REQUIRED,
+                reason=f"executor nonzero exit={exit_code}; no publication",
+                would_launch=True,
+                mutations=("claim", "launch_executor"),
+                safety=decision.safety,
+            )
+            messages.append(decision.reason)
+            return RunResult(
+                mode=mode,
+                decision=decision,
+                executor_launched=True,
+                executor_exit_code=exit_code,
+                messages=tuple(messages),
+                final_status=final_status,
+                elapsed_seconds=_elapsed(),
+                executor_stdout_tail=stdout_tail,
+                executor_stderr_tail=stderr_tail,
+                executor_log_path=log_path,
+            )
+
+        # Нужны postconditions если есть allowed/required или publication.
+        need_post = bool(
+            prompt.allowed_paths
+            or prompt.required_paths
+            or prompt.publication_commit
+            or prompt.publication_push
+        )
+        if not need_post:
+            final_status = FinalStatus.EXECUTOR_PROCESS_EXITED_ZERO
+            decision = Decision(
+                action=Action.LAUNCH_EXECUTOR,
+                state=CoordState.EXECUTOR_READY,
+                reason=(
+                    "executor exited 0; no publication contract; "
+                    "NOT work-package success"
+                ),
+                would_launch=True,
+                mutations=("claim", "launch_executor"),
+                safety=decision.safety,
+            )
+            messages.append(decision.reason)
+            return RunResult(
+                mode=mode,
+                decision=decision,
+                executor_launched=True,
+                executor_exit_code=exit_code,
+                messages=tuple(messages),
+                final_status=final_status,
+                elapsed_seconds=_elapsed(),
+                executor_stdout_tail=stdout_tail,
+                executor_stderr_tail=stderr_tail,
+                executor_log_path=log_path,
+            )
+
+        post = evaluate_postconditions(
+            prompt,
+            executor_worktree=executor_worktree,
+            git_runner=runner,
+        )
+        post_ok = post.ok
+        unexpected = post.unexpected_paths
+        required_ok = post.required_paths_ok
+        validation_ok = post.validation_ok
+        messages.append(f"postconditions: {post.reason}")
+
+        if not post.ok:
+            final_status = post.final_status
+            decision = Decision(
+                action=Action.LAUNCH_EXECUTOR,
+                state=CoordState.HUMAN_REQUIRED,
+                reason=post.reason,
+                would_launch=True,
+                mutations=("claim", "launch_executor"),
+                safety=decision.safety,
+            )
+            return RunResult(
+                mode=mode,
+                decision=decision,
+                executor_launched=True,
+                executor_exit_code=exit_code,
+                messages=tuple(messages),
+                final_status=final_status,
+                postconditions_ok=False,
+                unexpected_paths=unexpected,
+                required_paths_ok=required_ok,
+                validation_ok=validation_ok,
+                elapsed_seconds=_elapsed(),
+                executor_stdout_tail=stdout_tail,
+                executor_stderr_tail=stderr_tail,
+                executor_log_path=log_path,
+            )
+
+        pub = publish_exact_paths(
+            prompt,
+            executor_worktree=executor_worktree,
+            paths_to_stage=post.changed_paths,
+            git_runner=runner,
+        )
+        commit_created = pub.commit_created
+        local_head = pub.local_head
+        push_attempted = pub.push_attempted
+        remote_head = pub.remote_head
+        publication_verified = pub.publication_verified
+        final_status = pub.final_status
+        messages.append(f"publication: {pub.reason}")
+        if pub.git_commands:
+            messages.append(
+                "git_commands="
+                + "; ".join(" ".join(c) for c in pub.git_commands)
+            )
+
+        # HUMAN_REQUIRED если publication не полностью успешна при запросе push.
+        end_state = CoordState.EXECUTOR_READY
+        if final_status != FinalStatus.WORK_PACKAGE_SUCCESS:
+            end_state = CoordState.HUMAN_REQUIRED
+
         decision = Decision(
             action=Action.LAUNCH_EXECUTOR,
-            state=CoordState.EXECUTOR_READY,
-            reason="claimed and launched executor once; claim persists",
+            state=end_state,
+            reason=pub.reason,
             would_launch=True,
-            mutations=("claim", "launch_executor"),
+            mutations=("claim", "launch_executor", "publication"),
             safety=decision.safety,
+        )
+        return RunResult(
+            mode=mode,
+            decision=decision,
+            executor_launched=True,
+            executor_exit_code=exit_code,
+            messages=tuple(messages),
+            final_status=final_status,
+            postconditions_ok=True,
+            unexpected_paths=(),
+            required_paths_ok=True,
+            validation_ok=True,
+            commit_created=commit_created,
+            local_head=local_head,
+            push_attempted=push_attempted,
+            remote_head=remote_head,
+            publication_verified=publication_verified,
+            elapsed_seconds=_elapsed(),
+            executor_stdout_tail=stdout_tail,
+            executor_stderr_tail=stderr_tail,
+            executor_log_path=log_path,
         )
     finally:
         lock.release()
 
-    return RunResult(
-        mode=mode,
-        decision=decision,
-        executor_launched=executor_launched,
-        executor_exit_code=exit_code,
-        messages=tuple(messages),
-    )
+
+def result_to_json(result: RunResult) -> dict:
+    return {
+        "mode": result.mode,
+        "action": result.decision.action.value,
+        "state": result.decision.state.value if result.decision.state else None,
+        "reason": result.decision.reason,
+        "would_launch": result.decision.would_launch,
+        "mutations": list(result.decision.mutations),
+        "executor_launched": result.executor_launched,
+        "executor_exit_code": result.executor_exit_code,
+        "postconditions_ok": result.postconditions_ok,
+        "unexpected_paths": list(result.unexpected_paths),
+        "required_paths_ok": result.required_paths_ok,
+        "validation_ok": result.validation_ok,
+        "commit_created": result.commit_created,
+        "local_head": result.local_head,
+        "push_attempted": result.push_attempted,
+        "remote_head": result.remote_head,
+        "publication_verified": result.publication_verified,
+        "final_status": result.final_status.value,
+        "elapsed_seconds": result.elapsed_seconds,
+        "executor_stdout_tail": result.executor_stdout_tail,
+        "executor_stderr_tail": result.executor_stderr_tail,
+        "executor_log_path": result.executor_log_path,
+        "messages": list(result.messages),
+        "safety_ok": (
+            None if result.decision.safety is None else result.decision.safety.ok
+        ),
+        "safety_reasons": (
+            []
+            if result.decision.safety is None
+            else list(result.decision.safety.reasons)
+        ),
+    }
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -353,44 +547,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     if args.json:
-        payload = {
-            "mode": result.mode,
-            "action": result.decision.action.value,
-            "state": result.decision.state.value if result.decision.state else None,
-            "reason": result.decision.reason,
-            "would_launch": result.decision.would_launch,
-            "mutations": list(result.decision.mutations),
-            "executor_launched": result.executor_launched,
-            "executor_exit_code": result.executor_exit_code,
-            "messages": list(result.messages),
-            "safety_ok": (
-                None
-                if result.decision.safety is None
-                else result.decision.safety.ok
-            ),
-            "safety_reasons": (
-                []
-                if result.decision.safety is None
-                else list(result.decision.safety.reasons)
-            ),
-        }
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        print(json.dumps(result_to_json(result), ensure_ascii=False, indent=2))
     else:
         for line in result.messages:
             print(line)
         print(
-            f"RESULT mode={result.mode} action={result.decision.action.value} "
-            f"would_launch={result.decision.would_launch} "
-            f"launched={result.executor_launched}"
+            f"RESULT mode={result.mode} final_status={result.final_status.value} "
+            f"launched={result.executor_launched} "
+            f"commit={result.commit_created} push={result.push_attempted}"
         )
 
+    if result.final_status == FinalStatus.WORK_PACKAGE_SUCCESS:
+        return 0
+    if result.final_status in (
+        FinalStatus.SHADOW_OK,
+        FinalStatus.WAIT_OK,
+    ):
+        return 0
+    if result.final_status == FinalStatus.EXECUTOR_PROCESS_EXITED_ZERO:
+        # Не полный success — exit 3 чтобы не путать с WORK_PACKAGE_SUCCESS.
+        return 3
     if result.decision.action == Action.FAIL_CLOSED:
         return 2
-    if result.decision.state and result.decision.state.value == "HUMAN_REQUIRED":
+    if result.final_status in (
+        FinalStatus.HUMAN_REQUIRED,
+        FinalStatus.POSTCONDITION_FAILED,
+        FinalStatus.VALIDATION_FAILED,
+        FinalStatus.PUBLICATION_FAILED,
+        FinalStatus.PUBLICATION_UNVERIFIED,
+        FinalStatus.EXECUTOR_NONZERO,
+    ):
         return 2
-    if result.executor_launched and result.executor_exit_code not in (0, None):
-        return result.executor_exit_code or 1
-    return 0
+    return 1
 
 
 if __name__ == "__main__":
