@@ -1,7 +1,7 @@
 # AI Core S1 Foundation Contracts Handoff
 
 **Date:** 2026-09-11
-**Status:** implementation complete; draft review pending
+**Status:** implementation complete; draft PR published; review pending
 
 ## Governance and Git
 
@@ -13,7 +13,8 @@
 - AI Core base: `7569441c18362cfd15524ad73f56f7f35580c86f`
 - Pre-handoff implementation head:
   `2531d916cd4cb2c40af44acf63f86488bb60817c`
-- Draft PR: assigned during publication and recorded in the bridge closeout
+- Draft PR: https://github.com/kkobanenko/ai-core/pull/6
+- Initial PR head: `6a33c57e2096fa30c1c113e677480fde5e814894`
 
 The broad `ai_core_v0_3_implementation_authorized` flag remains false. This
 work does not authorize merge of its future draft PR.
@@ -109,8 +110,9 @@ Excluded:
 - Pinned consumer verifier: **9 contracts verified**.
 - `python3.10 -m compileall -q src`: pass.
 - `git diff --check`: pass.
-- Python 3.12 is unavailable locally; the existing hosted workflow uses Python
-  3.12 and must be green on the final PR head.
+- Python 3.12 is unavailable locally; hosted CI run `34572422763` passed on the
+  initial PR head. The final documentation-only publication head must also be
+  green before handoff.
 
 The local environment emits an existing `pytest-asyncio` configuration
 deprecation warning. It does not affect outcomes and no dependency/config
