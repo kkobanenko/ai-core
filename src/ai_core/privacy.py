@@ -39,13 +39,20 @@ def is_egress_eligible(
     ``outbound_form`` is intentionally not used to weaken classification.
     """
 
+    if not isinstance(data_class, DataClass):
+        return False
+    if not isinstance(outbound_form, OutboundForm):
+        return False
+    if not isinstance(network_boundary, NetworkBoundary):
+        return False
+
     if data_class is DataClass.SECRET:
         return False
 
     if network_boundary is NetworkBoundary.LOCAL_SAME_HOST:
         return True
 
-    return request_egress_authorized
+    return request_egress_authorized is True
 
 
 __all__ = [

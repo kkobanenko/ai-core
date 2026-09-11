@@ -94,3 +94,36 @@ def test_non_secret_same_host_data_does_not_require_egress_authorization() -> No
         outbound_form=OutboundForm.RAW,
         network_boundary=NetworkBoundary.LOCAL_SAME_HOST,
     )
+
+
+@pytest.mark.parametrize(
+    ("data_class", "outbound_form", "network_boundary"),
+    [
+        ("secret", OutboundForm.RAW, NetworkBoundary.LOCAL_SAME_HOST),
+        (DataClass.PUBLIC_NO_PII, "raw", NetworkBoundary.LOCAL_SAME_HOST),
+        (DataClass.PUBLIC_NO_PII, OutboundForm.RAW, "external"),
+    ],
+)
+def test_invalid_contract_values_fail_closed(
+    data_class: object,
+    outbound_form: object,
+    network_boundary: object,
+) -> None:
+    assert is_egress_eligible(  # type: ignore[arg-type]
+        data_class=data_class,
+        outbound_form=outbound_form,
+        network_boundary=network_boundary,
+        request_egress_authorized=True,
+    ) is False
+
+
+@pytest.mark.parametrize("truthy_non_boolean", [1, "yes", object()])
+def test_request_egress_authorization_requires_literal_true(
+    truthy_non_boolean: object,
+) -> None:
+    assert is_egress_eligible(  # type: ignore[arg-type]
+        data_class=DataClass.PUBLIC_NO_PII,
+        outbound_form=OutboundForm.RAW,
+        network_boundary=NetworkBoundary.EXTERNAL,
+        request_egress_authorized=truthy_non_boolean,
+    ) is False
