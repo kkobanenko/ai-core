@@ -119,3 +119,30 @@ def test_runtime_observation_does_not_expose_routing_eligibility() -> None:
     assert has_runtime_observation(evidence) is True
     assert not hasattr(evidence, "routing_eligible")
     assert not hasattr(evidence, "production_eligible")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"provider_id": None}, "provider_id must be a non-empty string"),
+        ({"model": ""}, "model must be a non-empty string"),
+        ({"capability": "STT_SEGMENTS"}, "capability must be ProviderCapability"),
+        ({"network_boundary": "external"}, "network_boundary must be NetworkBoundary"),
+        ({"level": "RUNTIME_OBSERVED"}, "level must be CapabilityEvidenceLevel"),
+    ],
+)
+def test_invalid_evidence_subject_values_fail_closed(
+    overrides: dict[str, object],
+    message: str,
+) -> None:
+    values: dict[str, object] = {
+        "provider_id": "mistral_external",
+        "model": "ministral-8b-2512",
+        "capability": ProviderCapability.TEXT,
+        "network_boundary": NetworkBoundary.EXTERNAL,
+        "level": CapabilityEvidenceLevel.CONFIGURED,
+    }
+    values.update(overrides)
+
+    with pytest.raises(ValueError, match=message):
+        CapabilityEvidence(**values)  # type: ignore[arg-type]
