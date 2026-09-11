@@ -15,6 +15,9 @@ A new prompt must name a narrow work package and provide external
 architecture/governance review plus explicit operator authorization before any
 further implementation or merge.
 
+The archived drift-tolerant PR #6 prompt is historical evidence only. It is not
+a standing authorization for any future work package or governance drift.
+
 Not authorized:
 
 - aliases or evidence registry implementation;

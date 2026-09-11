@@ -114,3 +114,7 @@ rewrite `main`, delete history, or move existing tags.
 **WAIT.** External architect/operator must define and authorize the next narrow
 work package. Successful S1 merge does not authorize S2 or broad AI Core v0.3
 implementation.
+
+The archived drift-tolerant PR #6 merge prompt is retained only as historical
+evidence. It is not a standing authorization for future work or governance
+drift; the active source of further action is `next-prompt.md` in WAIT state.
