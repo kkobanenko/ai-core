@@ -10,7 +10,7 @@ Primary checkout (untouched): `/home/kok4444/projects/ai-core` on `main` @ `7569
 | --- | --- |
 | branch | `chore/coordinator-transition-v0.1-20260911` |
 | base SHA | `f65221b4090a8d2e1fad7e3872e79ec52ec3ed5e` (`origin/main` at branch creation) |
-| head SHA | *19cacd7b133079c67ef1a2389f6667132c610fe5* |
+| head SHA | prefer `git rev-parse origin/chore/coordinator-transition-v0.1-20260911` (content commits: `ac0f09b` coordinator, `19cacd7` Spec Kit; docs tip may advance) |
 | current main (`origin/main`) | `f65221b4090a8d2e1fad7e3872e79ec52ec3ed5e` |
 | active bridge branch | `test/ai-core-compatibility-characterization-20260909` |
 | active bridge head | `36a8a1e4334b713ffb196f6464229b47d8c50592` |
