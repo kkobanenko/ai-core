@@ -36,6 +36,18 @@ LOGGER = logging.getLogger("dev_coordinator.updater")
 
 SystemctlRunner = Callable[[Sequence[str]], tuple[int, str, str]]
 
+# Post-stop HUMAN_REQUIRED причины, которые нельзя понижать до NOOP при local==remote.
+_STICKY_UNCERTAIN_REASONS = frozenset(
+    {
+        "ff_refused",
+        "post_merge_dirty",
+        "post_merge_verification_failed",
+    }
+)
+
+# Post-stop HUMAN_REQUIRED, для которых допустима одна bounded-попытка start при чистом git.
+_RECOVERABLE_START_REASONS = frozenset({"runner_start_failed"})
+
 @dataclass(frozen=True)
 class UpdateOutcome:
     """Результат одной попытки self-update."""
@@ -165,6 +177,34 @@ def _check_preconditions(
     return True, "ok"
 
 
+def _is_sticky_uncertain_recovery(state: dict[str, Any]) -> bool:
+    """Неразрешённое post-stop состояние с грязным/неопределённым git — только sticky."""
+    return (
+        state.get("last_result") == "HUMAN_REQUIRED"
+        and state.get("reason") in _STICKY_UNCERTAIN_REASONS
+    )
+
+
+def _is_recoverable_start_failure(state: dict[str, Any]) -> bool:
+    """Merge уже успешен, но runner не поднялся — можно попробовать один start."""
+    return (
+        state.get("last_result") == "HUMAN_REQUIRED"
+        and state.get("reason") in _RECOVERABLE_START_REASONS
+    )
+
+
+def _heads_match_recorded_recovery(
+    state: dict[str, Any],
+    local_head: str,
+    remote_head: str,
+) -> bool:
+    """Проверяем, что текущие head совпадают с зафиксированным успешным merge."""
+    return (
+        state.get("local_head") == local_head
+        and state.get("remote_head") == remote_head
+    )
+
+
 def _persist_attempt(
     state_path: Path,
     state: dict[str, Any],
@@ -235,8 +275,126 @@ def run_update_once(
             repo, config.transition_branch, git_runner
         )
 
-        # Шаг 3: NOOP если уже на remote head.
+        # Шаг 3: local==remote — NOOP или sticky/recovery post-stop пути.
         if local_head and remote_head and local_head == remote_head:
+            if _is_sticky_uncertain_recovery(state):
+                prior_reason = str(state.get("reason", "unknown"))
+                outcome = UpdateOutcome(
+                    result="HUMAN_REQUIRED",
+                    reason=prior_reason,
+                    local_head=local_head,
+                    remote_head=remote_head,
+                )
+                _persist_attempt(state_path, state, outcome)
+                LOGGER.warning(
+                    "updater sticky recovery preserved: %s", prior_reason
+                )
+                return outcome
+
+            if _is_recoverable_start_failure(state):
+                if not _heads_match_recorded_recovery(state, local_head, remote_head):
+                    outcome = UpdateOutcome(
+                        result="HUMAN_REQUIRED",
+                        reason="runner_start_failed",
+                        local_head=local_head,
+                        remote_head=remote_head,
+                    )
+                    _persist_attempt(state_path, state, outcome)
+                    LOGGER.warning(
+                        "runner_start_failed sticky: heads no longer match recorded merge"
+                    )
+                    return outcome
+
+                maintenance = MaintenanceGateLock(state_dir, mode="exclusive")
+                if not maintenance.acquire():
+                    outcome = UpdateOutcome(
+                        result="SKIPPED",
+                        reason="maintenance_held",
+                        local_head=local_head,
+                        remote_head=remote_head,
+                    )
+                    _persist_attempt(state_path, state, outcome)
+                    LOGGER.info(
+                        "runner recovery skipped: maintenance held by runner"
+                    )
+                    return outcome
+
+                process_lock = ProcessLock(state_dir)
+                if not process_lock.acquire():
+                    maintenance.release()
+                    maintenance = None
+                    outcome = UpdateOutcome(
+                        result="SKIPPED",
+                        reason="process_lock_held",
+                        local_head=local_head,
+                        remote_head=remote_head,
+                    )
+                    _persist_attempt(state_path, state, outcome)
+                    LOGGER.info(
+                        "runner recovery skipped: coordinator process lock held"
+                    )
+                    return outcome
+
+                try:
+                    ok, reason = _check_preconditions(config, git_runner)
+                    if ok and reason == "already_current":
+                        start_code, start_out, start_err = systemctl_runner(
+                            ["start", config.runner_service]
+                        )
+                        if start_code == 0:
+                            restart_at = _utc_now_iso()
+                            outcome = UpdateOutcome(
+                                result="SUCCESS",
+                                reason="runner_start_recovered",
+                                local_head=local_head,
+                                remote_head=remote_head,
+                                runner_started=True,
+                            )
+                            _persist_attempt(
+                                state_path,
+                                state,
+                                outcome,
+                                last_success_head=local_head,
+                                last_runner_restart_at=restart_at,
+                            )
+                            LOGGER.info(
+                                "runner recovery succeeded after prior start failure"
+                            )
+                            return outcome
+
+                        outcome = UpdateOutcome(
+                            result="HUMAN_REQUIRED",
+                            reason="runner_start_failed",
+                            local_head=local_head,
+                            remote_head=remote_head,
+                            runner_started=False,
+                        )
+                        _persist_attempt(state_path, state, outcome)
+                        LOGGER.error(
+                            "runner recovery start failed: %s",
+                            start_err or start_out,
+                        )
+                        return outcome
+
+                    outcome = UpdateOutcome(
+                        result="HUMAN_REQUIRED",
+                        reason="runner_start_failed",
+                        local_head=local_head,
+                        remote_head=remote_head,
+                    )
+                    _persist_attempt(state_path, state, outcome)
+                    LOGGER.warning(
+                        "runner recovery blocked by preconditions: %s", reason
+                    )
+                    return outcome
+                finally:
+                    if process_lock is not None:
+                        process_lock.release()
+                    if maintenance is not None:
+                        maintenance.release()
+                    process_lock = None
+                    maintenance = None
+
             outcome = UpdateOutcome(
                 result="NOOP",
                 reason="already_current",

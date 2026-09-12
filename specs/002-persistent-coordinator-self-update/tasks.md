@@ -80,6 +80,7 @@
 
 ## Phase 8 — Architect review and operator bootstrap
 
+- [x] **T033a** Architect review-fix 1: sticky post-stop recovery — `local==remote` must not downgrade unresolved `HUMAN_REQUIRED` to `NOOP`; bounded `runner_start_failed` recovery under locks; regression tests for consecutive attempts.
 - [ ] **T034** Architect exact-head review before implementation merge.
 - [ ] **T035** Merge only after required local tests are green; hosted CI not used as iteration mechanism.
 - [ ] **T036** Operator runs one explicit install command with `--enable-updater` after reviewed code is available locally (bootstrap boundary).

@@ -20,6 +20,7 @@ from tools.dev_coordinator.updater import (
     build_status_report,
     load_updater_state,
     run_update_once,
+    save_updater_state,
     updater_state_path,
 )
 from tools.dev_coordinator.updater_config import (
@@ -401,6 +402,142 @@ class TestUpdaterOrchestration:
         assert state["reason"] == "already_current"
         report = build_status_report(config)
         assert report["last_result"] == "NOOP"
+
+
+class TestUpdaterStickyRecovery:
+    """Consecutive attempts: sticky post-stop HUMAN_REQUIRED must not downgrade to NOOP."""
+
+    def test_runner_start_failed_then_recovery_succeeds(self, tmp_path: Path) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        fake = FakeGitRepo(head="old", remote_head="new")
+        start_calls = 0
+
+        def systemctl(args):
+            nonlocal start_calls
+            if list(args)[:1] == ["start"]:
+                start_calls += 1
+                if start_calls == 1:
+                    return 1, "", "start failed"
+                return 0, "", ""
+            return 0, "", ""
+
+        first = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert first.result == "HUMAN_REQUIRED"
+        assert first.reason == "runner_start_failed"
+        assert fake.head == "new"
+
+        merge_count_before = fake.commands.count(
+            ["merge", "--ff-only", f"origin/{fake.branch}"]
+        )
+        second = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert second.result == "SUCCESS"
+        assert second.reason == "runner_start_recovered"
+        assert second.runner_started is True
+        assert second.merge_attempted is False
+        assert fake.commands.count(
+            ["merge", "--ff-only", f"origin/{fake.branch}"]
+        ) == merge_count_before
+        assert start_calls == 2
+
+        state = load_updater_state(updater_state_path(paths["state"]))
+        assert state["last_result"] == "SUCCESS"
+        assert state["reason"] == "runner_start_recovered"
+
+    def test_runner_start_failed_stays_sticky_when_recovery_fails(
+        self, tmp_path: Path
+    ) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        fake = FakeGitRepo(head="old", remote_head="new")
+
+        def systemctl(args):
+            if list(args)[:1] == ["start"]:
+                return 1, "", "start failed"
+            return 0, "", ""
+
+        first = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert first.result == "HUMAN_REQUIRED"
+        assert first.reason == "runner_start_failed"
+
+        merge_count_before = fake.commands.count(
+            ["merge", "--ff-only", f"origin/{fake.branch}"]
+        )
+        second = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert second.result == "HUMAN_REQUIRED"
+        assert second.reason == "runner_start_failed"
+        assert second.merge_attempted is False
+        assert fake.commands.count(
+            ["merge", "--ff-only", f"origin/{fake.branch}"]
+        ) == merge_count_before
+
+    def test_already_current_without_recovery_is_noop(self, tmp_path: Path) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        fake = FakeGitRepo(head="same", remote_head="same")
+        calls, systemctl = TestUpdaterOrchestration()._systemctl_recorder()
+
+        outcome = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert outcome.result == "NOOP"
+        assert outcome.reason == "already_current"
+        assert calls == []
+
+    @pytest.mark.parametrize(
+        "sticky_reason",
+        ["ff_refused", "post_merge_dirty", "post_merge_verification_failed"],
+    )
+    def test_sticky_uncertain_not_cleared_by_already_current(
+        self, tmp_path: Path, sticky_reason: str
+    ) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        fake = FakeGitRepo(head="merged_head", remote_head="merged_head")
+        state_path = updater_state_path(paths["state"])
+        save_updater_state(
+            state_path,
+            {
+                "version": 1,
+                "local_head": "merged_head",
+                "remote_head": "merged_head",
+                "last_result": "HUMAN_REQUIRED",
+                "reason": sticky_reason,
+            },
+        )
+        calls, systemctl = TestUpdaterOrchestration()._systemctl_recorder()
+
+        outcome = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert outcome.result == "HUMAN_REQUIRED"
+        assert outcome.reason == sticky_reason
+        assert calls == []
+        assert not any(c[:2] == ["merge", "--ff-only"] for c in fake.commands)
+
+        state = load_updater_state(state_path)
+        assert state["last_result"] == "HUMAN_REQUIRED"
+        assert state["reason"] == sticky_reason
 
 
 class TestUpdaterLocks:
