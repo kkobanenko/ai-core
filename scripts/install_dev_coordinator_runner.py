@@ -19,8 +19,19 @@ _SERVICE_NAME = "ai-core-dev-coordinator-runner.service"
 _UNIT_TEMPLATE = (
     _REPO_ROOT / "ops" / "systemd" / "ai-core-dev-coordinator-runner.service.in"
 )
+_UPDATER_SERVICE_NAME = "ai-core-dev-coordinator-updater.service"
+_UPDATER_TIMER_NAME = "ai-core-dev-coordinator-updater.timer"
+_UPDATER_UNIT_TEMPLATE = (
+    _REPO_ROOT / "ops" / "systemd" / "ai-core-dev-coordinator-updater.service.in"
+)
+_UPDATER_TIMER_TEMPLATE = (
+    _REPO_ROOT / "ops" / "systemd" / "ai-core-dev-coordinator-updater.timer.in"
+)
 _DEFAULT_BRIDGE_PREFIX = "coord/bridge/"
 _DEFAULT_POLL_INTERVAL = 15
+_DEFAULT_TRANSITION_BRANCH = "chore/coordinator-transition-v0.1-20260911"
+_DEFAULT_ORIGIN_URL = "https://github.com/kkobanenko/ai-core.git"
+_DEFAULT_UPDATER_INTERVAL = 60
 
 SystemctlRunner = Callable[[Sequence[str]], tuple[int, str, str]]
 
@@ -136,6 +147,111 @@ def write_unit(content: str, unit_path: Path) -> None:
     unit_path.write_text(content, encoding="utf-8")
 
 
+def build_updater_config(
+    *,
+    coordinator_repo: Path,
+    transition_branch: str,
+    expected_origin_url: str,
+    timer_interval: int,
+    state_dir: Path,
+) -> dict:
+    from tools.dev_coordinator.updater_config import default_updater_config_dict
+
+    return default_updater_config_dict(
+        coordinator_repo=coordinator_repo,
+        transition_branch=transition_branch,
+        expected_origin_url=expected_origin_url,
+        state_dir=state_dir,
+        timer_interval_seconds=timer_interval,
+    )
+
+
+def render_updater_unit(
+    *,
+    python_bin: Path,
+    coordinator_repo: Path,
+    config_path: Path,
+) -> str:
+    template = _UPDATER_UNIT_TEMPLATE.read_text(encoding="utf-8")
+    return (
+        template.replace("{{PYTHON_BIN}}", str(python_bin))
+        .replace("{{COORDINATOR_REPO_ROOT}}", str(coordinator_repo))
+        .replace("{{CONFIG_PATH}}", str(config_path))
+    )
+
+
+def render_updater_timer(*, timer_interval: int) -> str:
+    template = _UPDATER_TIMER_TEMPLATE.read_text(encoding="utf-8")
+    return template.replace("{{TIMER_INTERVAL}}", f"{timer_interval}s")
+
+
+def install_updater(
+    *,
+    coordinator_repo: Path,
+    transition_branch: str,
+    expected_origin_url: str,
+    timer_interval: int,
+    state_dir: Path,
+    python_bin: Path,
+) -> dict[str, str]:
+    """Установить updater config + units (без systemctl activation)."""
+    config = build_updater_config(
+        coordinator_repo=coordinator_repo.resolve(),
+        transition_branch=transition_branch,
+        expected_origin_url=expected_origin_url,
+        timer_interval=timer_interval,
+        state_dir=state_dir.resolve(),
+    )
+    config_path = _config_dir() / "updater.json"
+    write_config(config, config_path)
+
+    service_content = render_updater_unit(
+        python_bin=python_bin,
+        coordinator_repo=coordinator_repo.resolve(),
+        config_path=config_path,
+    )
+    service_path = _systemd_user_dir() / _UPDATER_SERVICE_NAME
+    write_unit(service_content, service_path)
+
+    timer_content = render_updater_timer(timer_interval=timer_interval)
+    timer_path = _systemd_user_dir() / _UPDATER_TIMER_NAME
+    write_unit(timer_content, timer_path)
+
+    return {
+        "updater_config_path": str(config_path),
+        "updater_service_path": str(service_path),
+        "updater_timer_path": str(timer_path),
+        "updater_enabled": "false",
+    }
+
+
+def _activate_updater_bootstrap(
+    systemctl_runner: SystemctlRunner,
+) -> None:
+    """Fail-closed bootstrap: runner enable+restart, затем updater timer.
+
+    Порядок детерминированный — один daemon-reload и один restart runner
+    за вызов. Не полагаемся на enable --now как доказательство re-exec.
+    """
+    code, out, err = systemctl_runner(["daemon-reload"])
+    if code != 0:
+        raise RuntimeError(f"systemctl daemon-reload failed: {err or out}")
+
+    code, out, err = systemctl_runner(["enable", _SERVICE_NAME])
+    if code != 0:
+        raise RuntimeError(f"systemctl enable runner failed: {err or out}")
+
+    code, out, err = systemctl_runner(["restart", _SERVICE_NAME])
+    if code != 0:
+        raise RuntimeError(f"systemctl restart runner failed: {err or out}")
+
+    code, out, err = systemctl_runner(["enable", "--now", _UPDATER_TIMER_NAME])
+    if code != 0:
+        raise RuntimeError(
+            f"systemctl enable --now updater timer failed: {err or out}"
+        )
+
+
 def install_runner(
     *,
     coordinator_repo: Path,
@@ -145,6 +261,11 @@ def install_runner(
     agent_bin: Optional[str] = None,
     poll_interval: int = _DEFAULT_POLL_INTERVAL,
     enable: bool = False,
+    enable_updater: bool = False,
+    transition_branch: str = _DEFAULT_TRANSITION_BRANCH,
+    expected_origin_url: str = _DEFAULT_ORIGIN_URL,
+    updater_timer_interval: int = _DEFAULT_UPDATER_INTERVAL,
+    state_dir: Optional[Path] = None,
     systemctl_runner: SystemctlRunner = _default_systemctl,
 ) -> dict[str, str]:
     """Установить config + unit; опционально enable/start."""
@@ -185,7 +306,25 @@ def install_runner(
         "enabled": "false",
     }
 
-    if enable:
+    from tools.dev_coordinator.paths import default_state_dir
+
+    updater_outcome = install_updater(
+        coordinator_repo=coordinator_repo.resolve(),
+        transition_branch=transition_branch,
+        expected_origin_url=expected_origin_url,
+        timer_interval=updater_timer_interval,
+        state_dir=state_dir or default_state_dir(),
+        python_bin=py,
+    )
+    result.update(updater_outcome)
+
+    if enable_updater:
+        # --enable-updater гарантирует runner activation в той же транзакции:
+        # enable + explicit restart на новый unit, затем timer (fail-closed).
+        _activate_updater_bootstrap(systemctl_runner)
+        result["enabled"] = "true"
+        result["updater_enabled"] = "true"
+    elif enable:
         code, out, err = systemctl_runner(["daemon-reload"])
         if code != 0:
             raise RuntimeError(f"systemctl daemon-reload failed: {err or out}")
@@ -241,7 +380,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--enable",
         action="store_true",
-        help="Run systemctl --user daemon-reload and enable --now",
+        help="Run systemctl --user daemon-reload and enable --now runner",
+    )
+    parser.add_argument(
+        "--enable-updater",
+        action="store_true",
+        help=(
+            "Fail-closed updater bootstrap: daemon-reload, enable+restart runner "
+            "on reviewed unit, then enable updater timer (implies runner activation)"
+        ),
+    )
+    parser.add_argument(
+        "--transition-branch",
+        default=_DEFAULT_TRANSITION_BRANCH,
+        help="Reviewed transition branch for self-update",
+    )
+    parser.add_argument(
+        "--expected-origin-url",
+        default=_DEFAULT_ORIGIN_URL,
+        help="Expected origin URL for Coordinator checkout",
+    )
+    parser.add_argument(
+        "--updater-timer-interval",
+        type=int,
+        default=_DEFAULT_UPDATER_INTERVAL,
+        help="Updater timer interval seconds (default: 60, min: 30)",
     )
     return parser
 
@@ -256,6 +419,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         repos[name] = path
 
     try:
+        if args.updater_timer_interval < 30:
+            raise ValueError("updater timer interval must be >= 30 seconds")
         outcome = install_runner(
             coordinator_repo=args.coordinator_repo,
             managed_worktree_root=args.managed_worktree_root,
@@ -264,6 +429,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             agent_bin=args.agent_bin,
             poll_interval=args.poll_interval,
             enable=args.enable,
+            enable_updater=args.enable_updater,
+            transition_branch=args.transition_branch,
+            expected_origin_url=args.expected_origin_url,
+            updater_timer_interval=args.updater_timer_interval,
         )
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"install failed: {exc}", file=sys.stderr)
@@ -272,6 +441,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"config: {outcome['config_path']}")
     print(f"unit: {outcome['unit_path']}")
     print(f"enabled: {outcome['enabled']}")
+    print(f"updater_config: {outcome['updater_config_path']}")
+    print(f"updater_service: {outcome['updater_service_path']}")
+    print(f"updater_timer: {outcome['updater_timer_path']}")
+    print(f"updater_enabled: {outcome['updater_enabled']}")
     if outcome["enabled"] == "true":
         print(f"status: systemctl --user status {_SERVICE_NAME} --no-pager")
         print(
@@ -280,6 +453,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         print(
             "service not enabled; re-run with --enable after review"
+        )
+    if outcome["updater_enabled"] != "true":
+        print(
+            "updater timer not enabled; re-run with --enable-updater after review"
         )
     return 0
 

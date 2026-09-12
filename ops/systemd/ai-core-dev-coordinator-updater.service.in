@@ -1,0 +1,15 @@
+[Unit]
+Description=AI Core Coordinator Self-Updater (oneshot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{PYTHON_BIN}} -m tools.dev_coordinator.updater --config {{CONFIG_PATH}} --once
+WorkingDirectory={{COORDINATOR_REPO_ROOT}}
+Environment=PYTHONPATH={{COORDINATOR_REPO_ROOT}}
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
