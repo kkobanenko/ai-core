@@ -1,6 +1,6 @@
 # Persistent Coordinator Runner
 
-Status: **implemented (activation pending operator review)**
+Status: **implemented (runner + self-update; activation pending operator review)**
 
 Date: 2026-09-12
 
@@ -19,24 +19,36 @@ for this feature. `docs/agent-bridge/next-prompt.md` remains execution transport
 ```text
 Architect / Spec Kit
   ├─ creates target remote branch at exact base SHA
+  ├─ merges reviewed Coordinator tooling into transition branch
   └─ creates coord/bridge/<package> with EXECUTOR_READY prompt
                          ↓
-              Persistent runner (poll)
-                         ↓
-       fetch + strict candidate filtering
-                         ↓
-     managed bridge/executor worktree prep
-                         ↓
-         existing dev_coordinator.run_once
-                         ↓
-      Cursor Executor → postconditions →
-      transient cleanup → exact commit/push →
-      remote verification
-                         ↓
-           local terminal runner state (XDG)
-                         ↓
-               Architect review
+        Self-update updater (timer, ~60s)          Persistent runner (poll, ~15s)
+          fetch origin + ff-only advance                    ↓
+          stop/start runner on head change      maintenance gate SHARED
+                         ↓                              ↓
+              Coordinator checkout at            fetch + strict candidate filtering
+              reviewed transition head                     ↓
+                         ↓                    managed bridge/executor worktree prep
+              runner restarts once                         ↓
+                         ↓                 existing dev_coordinator.run_once
+                         └──────────────► Cursor Executor → postconditions →
+                                           transient cleanup → exact commit/push →
+                                           remote verification
+                                                     ↓
+                                       local terminal runner state (XDG)
+                                                     ↓
+                                               Architect review
 ```
+
+### Self-update (002)
+
+- Separate `systemd --user` timer + oneshot updater (`tools.dev_coordinator.updater`).
+- Updates only the configured **transition branch** via `git fetch origin` + `git merge --ff-only origin/<branch>`.
+- **Maintenance gate** (`coordinator-maintenance.lock`): runner holds **shared** during each scan; updater holds **exclusive** during update window.
+- **Updater exclusion** (`coordinator-updater.lock`): one updater instance at a time.
+- **Coordinator process lock** (`coordinator.lock`): updater holds during stop+merge+start; manual one-shot Coordinator fails safely if lock held.
+- Lock ordering: runner = maintenance(shared) → process lock (in `run_once`); updater = exclusion → maintenance(exclusive) → process lock.
+- Forbidden recovery: reset, clean, checkout branch switch, rebase, stash, pull, force fetch/merge.
 
 ## Safety boundaries
 
@@ -70,6 +82,25 @@ Default path: `~/.config/ai-core-dev-coordinator/runner.json`
 Parser rejects unknown keys, relative paths, duplicate clone paths, invalid poll
 intervals, and any `bridge_prefix` other than `coord/bridge/`.
 
+### Updater config
+
+Default path: `~/.config/ai-core-dev-coordinator/updater.json`
+
+```json
+{
+  "coordinator_repo_root": "/absolute/path/to/coordinator-checkout",
+  "transition_branch": "chore/coordinator-transition-v0.1-20260911",
+  "expected_origin_url": "https://github.com/kkobanenko/ai-core.git",
+  "runner_service": "ai-core-dev-coordinator-runner.service",
+  "timer_interval_seconds": 60,
+  "state_dir": "/home/operator/.local/state/ai-core-dev-coordinator"
+}
+```
+
+`coordinator_repo_root` must match `runner.json` when both exist. Parser rejects
+unknown keys, relative paths, empty branch/origin, `main`/`master` transition
+branches, and timer intervals below 30 seconds.
+
 ## Managed worktree layout
 
 | Role | Path pattern |
@@ -94,6 +125,13 @@ Coordinator claim semantics still apply.
 Terminal runner statuses: `SUCCESS`, `FAIL_CLOSED`, `HUMAN_REQUIRED`,
 `EXECUTOR_FAILED`, `PUBLICATION_FAILED`, `REJECTED`.
 
+### Updater state
+
+Atomically persisted at `${state_dir}/updater-state.json`:
+
+- `local_head`, `remote_head`, `last_attempt_at`, `last_result` (`NOOP`, `SUCCESS`, `SKIPPED`, `FAIL_CLOSED`, `HUMAN_REQUIRED`)
+- `reason`, `last_success_head`, `last_runner_restart_at`
+
 ## Commands
 
 ### One-time install (operator, after Architect review)
@@ -105,10 +143,13 @@ python3.10 scripts/install_dev_coordinator_runner.py \
   --repo kkobanenko/ai-core=/path/to/ai-core \
   --repo kkobanenko/platform-control=/path/to/platform-control \
   --agent-bin "$(command -v agent)" \
-  --enable
+  --enable \
+  --enable-updater
 ```
 
-Without `--enable`, the installer writes config and unit files only.
+- `--enable` activates the persistent runner service.
+- `--enable-updater` activates the self-update timer (bootstrap boundary for automatic transition advances).
+- Without these flags, the installer writes config and unit files only.
 
 ### Status (read-only)
 
@@ -127,27 +168,62 @@ PYTHONPATH=. python3.10 -m tools.dev_coordinator.runner \
   --once
 ```
 
+If updater holds maintenance exclusive, `--once` prints a skipped summary and does
+not terminalize candidates.
+
+### Updater status (read-only)
+
+```bash
+PYTHONPATH=/path/to/coordinator-checkout \
+python3.10 -m tools.dev_coordinator.updater \
+  --config ~/.config/ai-core-dev-coordinator/updater.json \
+  --status --json
+```
+
+### Single updater attempt (smoke test; no timer enable)
+
+```bash
+PYTHONPATH=. python3.10 -m tools.dev_coordinator.updater \
+  --config /path/to/updater.json \
+  --once
+```
+
 ### Service observability
 
 ```bash
 systemctl --user status ai-core-dev-coordinator-runner.service --no-pager
 journalctl --user -u ai-core-dev-coordinator-runner.service -n 100 --no-pager
+journalctl --user -u ai-core-dev-coordinator-updater.service -n 50 --no-pager
+systemctl --user status ai-core-dev-coordinator-updater.timer --no-pager
 ```
 
 ## Activation and rollback
 
-**Activation** is a deliberate operator action after merge/review (`--enable`).
-Implementation tests never start the live service.
+**Runner activation**: deliberate operator action after merge/review (`--enable`).
 
-**Rollback before activation**: disable feature branch; no service exists.
+**Updater bootstrap** (one-time, after implementation review): `--enable-updater`.
+Until then, reviewed transition merges on GitHub do not advance the local checkout
+automatically.
 
-**Rollback after activation**:
+Implementation tests never start live systemd timers on the developer workstation.
+
+**Rollback before activation**: no services exist; discard units/config.
+
+**Rollback after activation** (keep runner, disable self-update):
+
+```bash
+systemctl --user disable --now ai-core-dev-coordinator-updater.timer
+systemctl --user disable --now ai-core-dev-coordinator-updater.service
+```
+
+**Rollback runner as well**:
 
 ```bash
 systemctl --user disable --now ai-core-dev-coordinator-runner.service
 ```
 
-Manual one-shot Coordinator remains available throughout.
+Manual one-shot Coordinator remains available throughout. If updater left the runner
+stopped after `HUMAN_REQUIRED` / `ff_refused`, inspect git state before restarting.
 
 ## Normal future workflow
 

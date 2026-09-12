@@ -27,6 +27,7 @@ from tools.dev_coordinator.runner_config import (
     default_config_path,
     load_runner_config,
 )
+from tools.dev_coordinator.locks import MaintenanceGateLock
 from tools.dev_coordinator.paths import default_state_dir
 
 # Относительный путь prompt внутри bridge ref.
@@ -477,6 +478,42 @@ def scan_repositories(
     return summary
 
 
+def scan_with_maintenance_gate(
+    config: RunnerConfig,
+    *,
+    git_runner: GitRunner = default_git_runner,
+    coordinator_invoker: CoordinatorInvoker = run_once,
+    state_dir: Optional[Path] = None,
+    state_path: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Один цикл опроса с maintenance gate shared (runner cooperation)."""
+    effective_state_dir = (state_dir or default_state_dir()).resolve()
+    gate = MaintenanceGateLock(effective_state_dir, mode="shared")
+    if not gate.acquire():
+        LOGGER.info(
+            "maintenance gate exclusive held by updater; skipping scan cycle"
+        )
+        return {
+            "skipped": True,
+            "skip_reason": "maintenance_held",
+            "scanned_repos": [],
+            "candidates_found": 0,
+            "processed": [],
+            "skipped_terminal": 0,
+            "errors": [],
+        }
+    try:
+        return scan_repositories(
+            config,
+            git_runner=git_runner,
+            coordinator_invoker=coordinator_invoker,
+            state_dir=state_dir,
+            state_path=state_path,
+        )
+    finally:
+        gate.release()
+
+
 def build_status_report(
     config: RunnerConfig,
     state_path: Optional[Path] = None,
@@ -515,7 +552,7 @@ def run_loop(
 
     while True:
         try:
-            summary = scan_repositories(
+            summary = scan_with_maintenance_gate(
                 config,
                 git_runner=git_runner,
                 coordinator_invoker=coordinator_invoker,
@@ -612,9 +649,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     if args.once:
-        summary = scan_repositories(config, state_dir=state_dir)
+        summary = scan_with_maintenance_gate(config, state_dir=state_dir)
         if args.json:
             print(json.dumps(summary, indent=2, ensure_ascii=False))
+        elif summary.get("skipped"):
+            print(
+                f"SCAN skipped reason={summary.get('skip_reason', 'maintenance_held')}"
+            )
         else:
             print(
                 f"SCAN candidates={summary['candidates_found']} "
