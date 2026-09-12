@@ -14,6 +14,11 @@ from typing import Callable, Optional, Sequence
 
 # Корень репозитория Coordinator (где лежит tools/).
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+# Прямой вызов по абсолютному пути (без PYTHONPATH) добавляет в sys.path только
+# каталог scripts/, а не корень репозитория — подключаем его до импортов tools.*.
+_REPO_ROOT_STR = str(_REPO_ROOT)
+if _REPO_ROOT_STR not in sys.path:
+    sys.path.insert(0, _REPO_ROOT_STR)
 
 _SERVICE_NAME = "ai-core-dev-coordinator-runner.service"
 _UNIT_TEMPLATE = (

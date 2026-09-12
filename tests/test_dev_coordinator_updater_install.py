@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from scripts.install_dev_coordinator_runner import (
+    _REPO_ROOT,
     _SERVICE_NAME,
     _UPDATER_TIMER_NAME,
     install_runner,
     render_updater_timer,
     render_updater_unit,
 )
+
+_INSTALLER_SCRIPT = _REPO_ROOT / "scripts" / "install_dev_coordinator_runner.py"
 
 
 @pytest.fixture
@@ -293,6 +299,63 @@ def test_rendered_updater_units(fake_home: Path) -> None:
     assert "Type=oneshot" in service
     assert "--once" in service
     assert "OnUnitActiveSec=60s" in timer
+
+
+def _run_installer_subprocess(
+    args: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Запуск installer как отдельного процесса (без PYTHONPATH)."""
+    run_env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    if env is not None:
+        run_env.update(env)
+    return subprocess.run(
+        [sys.executable, str(_INSTALLER_SCRIPT), *args],
+        cwd=str(cwd),
+        env=run_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_direct_invocation_help_from_outside_repo(tmp_path: Path) -> None:
+    """Регрессия: абсолютный путь к скрипту без PYTHONPATH и вне репозитория."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    proc = _run_installer_subprocess(["--help"], cwd=outside)
+    assert proc.returncode == 0, proc.stderr
+    assert "Install persistent Coordinator runner" in proc.stdout
+
+
+def test_direct_invocation_config_path_without_pythonpath(
+    fake_home: Path,
+) -> None:
+    """Регрессия: неактивирующий install из cwd вне репозитория без PYTHONPATH."""
+    paths = _layout(fake_home)
+    outside = fake_home / "outside"
+    outside.mkdir()
+    proc = _run_installer_subprocess(
+        [
+            "--coordinator-repo",
+            str(_REPO_ROOT),
+            "--managed-worktree-root",
+            str(paths["managed"]),
+            "--repo",
+            f"kkobanenko/ai-core={paths['ai_core']}",
+            "--python-bin",
+            str(paths["python"]),
+            "--agent-bin",
+            str(paths["agent"]),
+        ],
+        cwd=outside,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "config:" in proc.stdout
+    assert "updater_config:" in proc.stdout
+    assert "service not enabled" in proc.stdout
 
 
 def test_invalid_updater_interval_rejected(fake_home: Path) -> None:
