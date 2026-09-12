@@ -104,6 +104,10 @@ def _branch_checked_out_outside_managed(
 ) -> Optional[Path]:
     """Найти checkout ветки вне managed root (коллизия → fail closed)."""
     for wt_path in _list_worktree_paths(repo_clone, git_runner):
+        # Пропускаем устаревшие регистрации: git не должен вызываться с cwd
+        # в каталоге, которого уже нет (иначе FileNotFoundError рвёт весь scan).
+        if not wt_path.is_dir():
+            continue
         snap = read_worktree_snapshot(wt_path, git_runner=git_runner)
         if snap.branch == branch and not is_path_contained(wt_path, managed_root):
             return wt_path

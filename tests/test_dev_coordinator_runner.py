@@ -446,11 +446,77 @@ class TestManagedWorktrees:
             git_runner=git_runner,
         )
         assert not result.ok
-        forbidden = ("reset", "clean", "checkout", "-f", "--force")
+        merge_cmds = [
+            c for c, _ in state["commands"] if c[:2] == ["merge", "--ff-only"]
+        ]
+        assert merge_cmds == [["merge", "--ff-only", sha_new]]
+        forbidden_commands = frozenset({"reset", "clean", "checkout"})
+        forbidden_flags = frozenset({"-f", "--force"})
         for cmd, _ in state["commands"]:
-            flat = " ".join(cmd)
-            for token in forbidden:
-                assert token not in flat
+            if cmd:
+                assert cmd[0] not in forbidden_commands
+            for token in cmd:
+                assert token not in forbidden_flags
+
+    def test_stale_missing_worktree_does_not_abort_bridge_prepare(
+        self, tmp_path: Path
+    ) -> None:
+        """Устаревшая регистрация worktree без каталога не ломает collision scan."""
+        config = _make_config(tmp_path)
+        clone = config.repositories["kkobanenko/ai-core"]
+        branch = "coord/bridge/pkg-001"
+        sha = "bridge_sha_001"
+        wt_path = derive_bridge_worktree_path(
+            config.managed_worktree_root, "kkobanenko/ai-core", branch
+        )
+        stale_path = tmp_path / "stale-missing-worktree"
+
+        worktrees: dict[str, dict[str, str]] = {}
+        commands: list[tuple[list[str], str]] = []
+
+        def git_runner(args, cwd):
+            cmd = list(args)
+            commands.append((cmd, str(cwd)))
+            if cmd[:2] == ["worktree", "list"]:
+                lines = [
+                    f"worktree {stale_path}",
+                    "branch coord/bridge/unrelated",
+                ]
+                for p, info in worktrees.items():
+                    lines.append(f"worktree {p}")
+                    lines.append(f"branch {info['branch']}")
+                return 0, "\n".join(lines) + "\n", ""
+            if cmd[:2] == ["ls-remote", "origin"]:
+                return 0, f"{sha}\trefs/heads/{branch}\n", ""
+            if cmd[:2] == ["show-ref", "--verify"]:
+                return 1, "", ""
+            if cmd[:2] == ["worktree", "add"]:
+                wt_path.mkdir(parents=True, exist_ok=True)
+                worktrees[str(wt_path)] = {"branch": branch, "sha": sha}
+                return 0, "", ""
+            if cmd[:2] == ["branch", "--show-current"]:
+                return 0, branch + "\n", ""
+            if cmd[:2] == ["rev-parse", "HEAD"]:
+                return 0, sha + "\n", ""
+            if cmd == ["rev-parse", "--is-inside-work-tree"]:
+                return 0, "true\n", ""
+            if cmd[:2] == ["status", "--porcelain"]:
+                return 0, "", ""
+            if cmd[:3] == ["remote", "get-url", "origin"]:
+                return 0, "git@github.com:kkobanenko/ai-core.git\n", ""
+            return 0, "", ""
+
+        result = prepare_bridge_worktree(
+            repo_clone=clone,
+            canonical_repo="kkobanenko/ai-core",
+            bridge_branch=branch,
+            bridge_sha=sha,
+            managed_root=config.managed_worktree_root,
+            git_runner=git_runner,
+        )
+        assert result.ok
+        assert result.created
+        assert not any(cwd == str(stale_path) for _, cwd in commands)
 
     def test_dirty_bridge_worktree_not_advanced(self, tmp_path: Path) -> None:
         config = _make_config(tmp_path)
