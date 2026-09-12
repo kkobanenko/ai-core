@@ -9,7 +9,8 @@
 ## Phase 0 — Specification (this package)
 
 - [x] **T000** Author `spec.md` covering authority, git safety, lock coordination, supervision, installer bootstrap, observability, testing, and rollback.
-- [x] **T000a** Author `research.md` with architecture decisions (separate updater service, ff-only, lock reuse, race-safe sequence).
+- [x] **T000a** Author `research.md` with architecture decisions (separate updater service, ff-only, maintenance gate, deterministic lock ordering).
+- [x] **T000f** Architect review fix: close self-update lock race — maintenance gate shared/exclusive, post-stop failure policy, explicit test matrix (FR-035).
 - [x] **T000b** Author `plan.md` with technical context, structure, validation strategy, and implementation boundaries.
 - [x] **T000c** Author `tasks.md` (this file) with dependency-ordered implementation tasks for the next package.
 - [x] **T000d** Author `quickstart.md` describing bootstrap and normal operation.
@@ -30,14 +31,22 @@
 - [ ] **T008** Fail closed on dirty, diverged, wrong branch, wrong origin, fetch failure, or non-ff merge without reset/clean/checkout/rebase/stash.
 - [ ] **T009** Add fake-git tests for NOOP (already current), success ff-only, dirty refusal, diverged refusal, wrong branch/origin refusal.
 
-## Phase 3 — Lock coordination and runner lifecycle
+## Phase 3 — Maintenance gate, lock coordination, and runner lifecycle
 
-- [ ] **T010** Reuse `ProcessLock` non-blocking probe on `${state_dir}/locks/coordinator.lock`; skip with reason when held.
+- [ ] **T010** Add `MaintenanceGateLock` to `tools/dev_coordinator/locks.py` with shared (runner) and exclusive (updater) non-blocking acquisition on `${state_dir}/locks/coordinator-maintenance.lock`.
+- [ ] **T010a** Extend `tools/dev_coordinator/runner.py`: acquire maintenance shared before each scan; hold through candidate processing and delegated `run_once`; skip scan without terminalizing candidates when exclusive held; release shared after scan cycle.
 - [ ] **T011** Add updater exclusion lock `${state_dir}/locks/coordinator-updater.lock` preventing concurrent updater runs.
-- [ ] **T012** Implement race-safe sequence: exclusion lock → fetch → NOOP check → process lock probe → preconditions → runner stop → re-verify lock + preconditions → ff-only → conditional runner start.
-- [ ] **T013** On ff-only failure after runner stop: record fail-closed state, do not enter restart loop; document recovery in status output.
+- [ ] **T012** Implement deterministic updater sequence: exclusion → fetch → NOOP check (no runner stop) → maintenance(exclusive) → Coordinator process lock (hold) → preconditions → runner stop → ff-only → conditional runner start → release locks reverse order.
+- [ ] **T013** On ff-only failure after runner stop: verify pre-update HEAD/worktree snapshot; if proven unchanged+clean, MAY restore runner once + `FAIL_CLOSED`; else `HUMAN_REQUIRED`, runner stopped; never reset/clean/force; never tight restart loop.
 - [ ] **T014** Inject fake systemctl; successful head change triggers exactly one runner stop + one start; NOOP/SKIP/FAIL_CLOSED (pre-stop) trigger zero restarts.
-- [ ] **T015** Add fake-lock tests: active Coordinator lock → SKIP; lock after stop → FAIL_CLOSED without auto-restart loop.
+- [ ] **T015** Add fake-lock tests per FR-035:
+  - runner holds maintenance shared → updater SKIP, zero stop/merge/start;
+  - updater holds maintenance exclusive → runner skips scan, no terminal candidate failures;
+  - updater holds Coordinator process lock during stop+merge+start;
+  - concurrent fake harness: no deadlock with documented lock ordering;
+  - ff failure + proven unchanged clean → runner restored once, `FAIL_CLOSED`;
+  - ff failure + uncertain/changed state → runner stopped, `HUMAN_REQUIRED`;
+  - no-op path never stops runner.
 
 ## Phase 4 — State, CLI, and observability
 

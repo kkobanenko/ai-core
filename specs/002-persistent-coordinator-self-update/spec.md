@@ -34,7 +34,7 @@ As the operator, after Architect review merges new Coordinator tooling into the 
 
 **Acceptance Scenarios**:
 
-1. **Given** updater is enabled, local checkout is clean on the configured transition branch, remote has exactly one new fast-forward commit, and no Coordinator process lock is held, **When** the updater timer fires, **Then** local HEAD advances by strict fast-forward only and the persistent runner is restarted exactly once.
+1. **Given** updater is enabled, local checkout is clean on the configured transition branch, remote has exactly one new fast-forward commit, and maintenance gate + Coordinator process lock can be acquired (no active scan/package or manual one-shot), **When** the updater timer fires, **Then** local HEAD advances by strict fast-forward only and the persistent runner is restarted exactly once.
 2. **Given** local HEAD already equals the remote reviewed transition head, **When** the updater runs, **Then** no git mutation occurs and the runner is not restarted.
 3. **Given** Architect has not merged any new transition commit, **When** the updater runs repeatedly, **Then** behavior remains a no-op with diagnosable status.
 
@@ -59,17 +59,19 @@ As the operator, I need self-update to refuse any state it cannot verify safely,
 
 ### User Story 3 - Do not interrupt an active work package (Priority: P1)
 
-As the operator, I need self-update to defer while Coordinator is executing or publishing a package.
+As the operator, I need self-update to defer while Coordinator is executing or publishing a package, using deterministic lock ordering rather than timing-dependent probes.
 
-**Why this priority**: Stopping or restarting the runner mid-package could duplicate execution, corrupt publication, or violate exactly-once claim semantics.
+**Why this priority**: Stopping or restarting the runner mid-package could duplicate execution, corrupt publication, or violate exactly-once claim semantics. A non-blocking probe of the Coordinator process lock followed by `systemctl stop` leaves a race window in which the runner can begin a new package between probe and stop.
 
-**Independent Test**: Hold the existing Coordinator process lock while remote has a newer transition head; verify updater skips with retry reason and performs no runner stop/restart. Release lock on next cycle and verify successful update.
+**Independent Test**: With runner holding maintenance gate shared during an active scan/package, verify updater cannot acquire exclusive maintenance, performs zero stop/merge/start, and retries later. With updater holding maintenance exclusive, verify runner skips scan without terminalizing discovered packages.
 
 **Acceptance Scenarios**:
 
-1. **Given** the Coordinator process lock is held by an active `run_once` sequence, **When** the updater timer fires, **Then** update is skipped, no runner stop occurs, and a later attempt retries.
-2. **Given** the lock is free and preconditions pass, **When** a new remote head exists, **Then** updater follows the race-safe sequence: acquire updater exclusion → verify lock still free → stop runner → fast-forward checkout → restart runner only on successful head change → release exclusion.
-3. **Given** runner stop succeeds but fast-forward fails, **When** the sequence completes, **Then** runner is left stopped or restored according to the documented fail-safe policy, failure is diagnosable, and no restart loop is entered.
+1. **Given** the persistent runner holds the maintenance gate in **shared** mode during an active scan or delegated `run_once` work, **When** the updater timer fires, **Then** exclusive maintenance acquisition fails non-blocking, update is `SKIPPED`, no runner stop occurs, and a later attempt retries.
+2. **Given** the updater holds maintenance gate **exclusive** and Coordinator process lock, **When** the runner poll fires, **Then** shared maintenance acquisition fails, the runner skips that scan without recording candidates as terminal failures, and retries on the normal poll cadence.
+3. **Given** preconditions pass and no active scan/package holds shared maintenance, **When** a new remote head exists, **Then** updater follows the deterministic sequence: updater exclusion → maintenance(exclusive) → Coordinator process lock → stop runner → fast-forward → conditional restart → release locks in reverse order.
+4. **Given** runner stop succeeds but fast-forward unexpectedly fails, **When** local HEAD/worktree can be proven exactly unchanged and clean at the pre-update state, **Then** updater MAY restore/start the previous runner once, record `FAIL_CLOSED`, and retry only on a later timer cycle.
+5. **Given** runner stop succeeds but fast-forward fails and checkout state cannot be proven unchanged/clean, **When** the sequence completes, **Then** runner remains stopped, `HUMAN_REQUIRED`/`FAIL_CLOSED` diagnostics are surfaced, and no automatic tight restart loop or reset/clean/force recovery is attempted.
 
 ---
 
@@ -106,8 +108,10 @@ As the operator, I want to see whether self-update is current, skipped, or block
 - Remote transition branch temporarily unavailable: fail closed, retry later; no runner restart.
 - Local checkout path differs from configured canonical Coordinator repo root: fail closed.
 - Runner service already stopped before update attempt: fast-forward may still proceed; restart only if head actually changed.
-- Updater crashes after runner stop but before restart: next cycle must detect stopped runner and either complete restart or surface `HUMAN_REQUIRED` without a tight restart loop.
-- Two updater instances must not run concurrently; updater uses its own exclusion lock separate from but coordinated with the Coordinator process lock.
+- Updater crashes after runner stop but before restart: next cycle must detect stopped runner and either complete restart (only when state is provably unchanged/clean) or surface `HUMAN_REQUIRED` without a tight restart loop.
+- Two updater instances must not run concurrently; updater uses its own exclusion lock separate from but coordinated with the maintenance gate and Coordinator process lock.
+- A newly restarted runner may start while updater still owns maintenance exclusive, but it MUST NOT process candidates until maintenance exclusive is released.
+- Manual one-shot Coordinator does not need to understand maintenance gate in this feature, but updater MUST hold the existing Coordinator process lock during the critical update window so a concurrent manual launch fails safely rather than executing during mutation; document this exceptional race behavior.
 - `git fetch origin` is allowed; no other remotes, no `git pull` with merge/rebase semantics, no worktree mutation outside the configured Coordinator checkout.
 - Secrets MUST NOT be written to updater state or logs.
 
@@ -129,47 +133,69 @@ As the operator, I want to see whether self-update is current, skipped, or block
 - **FR-007**: The system MUST NOT use force, reset, clean, checkout branch switching, stash, rebase, branch deletion, or automatic conflict resolution.
 - **FR-008**: Diverged, dirty, wrong-origin, wrong-branch, or non-canonical checkout states MUST fail closed and be reported; they MUST NOT be repaired automatically.
 
-#### Active work protection
+#### Active work protection (maintenance gate + lock ordering)
 
-- **FR-009**: The updater MUST coordinate with the existing Coordinator process lock (or an equally deterministic shared lock on the same lock file).
-- **FR-010**: If a package is actively executing or publishing, the updater MUST skip and retry later rather than stop or restart the runner mid-package.
-- **FR-011**: The specification MUST define a race-safe sequence for lock observation, runner stop, fast-forward, and conditional runner restart.
+- **FR-009**: The system MUST introduce a dedicated **maintenance gate lock** at `${state_dir}/locks/coordinator-maintenance.lock`, coordinated by both the persistent runner and updater, supporting shared (runner) and exclusive (updater) acquisition modes via `fcntl.flock`.
+- **FR-010**: The persistent runner MUST acquire maintenance gate **shared** before each scan and hold it through candidate processing and any delegated `run_once` work for that scan. If shared acquisition fails because updater holds exclusive maintenance, the runner MUST skip that scan without recording candidates as terminal failures and retry on the normal poll cadence.
+- **FR-011**: The updater MUST acquire updater-instance exclusion lock first, then acquire maintenance gate **exclusive** non-blocking/fail-safe. If exclusive acquisition fails (runner has active scan/package), updater MUST return `SKIPPED` with zero stop/merge/start and retry later.
+- **FR-012**: After exclusive maintenance is held, updater MUST acquire and **hold** the existing Coordinator process lock (`${state_dir}/locks/coordinator.lock`) for the critical update window. If process lock cannot be acquired (e.g. manual one-shot Coordinator active), updater MUST release maintenance exclusive and return `SKIPPED`.
+- **FR-013**: Lock ordering MUST be explicit and deadlock-free: runner path = maintenance(shared) → Coordinator process lock when `run_once` launches; updater path = updater exclusion → maintenance(exclusive) → Coordinator process lock. Locks MUST be released in reverse acquisition order.
+- **FR-014**: Once updater holds maintenance-exclusive + Coordinator process lock, no persistent-runner package can start and an active package cannot exist. Only then MAY updater stop runner, perform verified ff-only update, and start runner if appropriate.
+- **FR-015**: A newly restarted runner MAY start while updater still owns maintenance-exclusive, but MUST NOT process candidates until maintenance exclusive is released.
+- **FR-016**: Manual one-shot Coordinator does not need maintenance-gate awareness in this feature, but updater MUST hold Coordinator process lock so concurrent manual launch fails safely; document exceptional manual-launch race behavior.
+- **FR-017**: The implementation MUST NOT rely on timing or non-blocking process-lock probe alone to avoid interrupting a package; maintenance gate cooperation in the runner is required (minimal changes to `tools/dev_coordinator/runner.py` plus a small lock helper/module).
+
+#### Post-stop failure policy
+
+- **FR-018**: If ff-only unexpectedly fails after runner stop, updater MUST verify whether local HEAD/worktree remained exactly at the pre-update clean state.
+- **FR-019**: If unchanged and clean can be proven, updater MAY safely restore/start the previous runner once, record `FAIL_CLOSED`, and retry only on a later timer cycle.
+- **FR-020**: If state cannot be proven unchanged/clean, updater MUST leave runner stopped and surface `HUMAN_REQUIRED`/`FAIL_CLOSED` diagnostics.
+- **FR-021**: Updater MUST NEVER enter an automatic tight restart loop and MUST NEVER use reset/clean/force to recover.
 
 #### Service supervision
 
-- **FR-012**: The persistent runner MUST remain supervised by `systemd --user` as today.
-- **FR-013**: Self-update MUST be implemented as a separately supervised scheduled service (timer + oneshot service), not by having the runner mutate its own checkout inline.
-- **FR-014**: Default update cadence MUST be conservative (approximately 60 seconds), documented, configurable if justified, and MUST NOT be faster than operationally necessary.
-- **FR-015**: The runner MUST be restarted only after a successful local head change.
-- **FR-016**: When already at remote head, the updater MUST NOT restart the runner.
-- **FR-017**: A failed or skipped update MUST leave a diagnosable state and MUST NOT cause a restart loop.
+- **FR-022**: The persistent runner MUST remain supervised by `systemd --user` as today.
+- **FR-023**: Self-update MUST be implemented as a separately supervised scheduled service (timer + oneshot service), not by having the runner mutate its own checkout inline.
+- **FR-024**: Default update cadence MUST be conservative (approximately 60 seconds), documented, configurable if justified, and MUST NOT be faster than operationally necessary.
+- **FR-025**: The runner MUST be restarted only after a successful local head change.
+- **FR-026**: When already at remote head, the updater MUST NOT restart the runner (no-op path never stops runner).
+- **FR-027**: A failed or skipped update MUST leave a diagnosable state and MUST NOT cause a restart loop.
 
 #### Installer and activation
 
-- **FR-018**: The existing idempotent installer design MUST be extended rather than requiring ad-hoc shell setup.
-- **FR-019**: Existing runner config paths and runner installation MUST remain compatible.
-- **FR-020**: One final operator activation/update after implementation review is required; after that, reviewed transition updates MUST NOT require per-update terminal commands.
-- **FR-021**: The bootstrap boundary MUST be documented explicitly in quickstart and handoff material.
+- **FR-028**: The existing idempotent installer design MUST be extended rather than requiring ad-hoc shell setup.
+- **FR-029**: Existing runner config paths and runner installation MUST remain compatible.
+- **FR-030**: One final operator activation/update after implementation review is required; after that, reviewed transition updates MUST NOT require per-update terminal commands.
+- **FR-031**: The bootstrap boundary MUST be documented explicitly in quickstart and handoff material.
 
 #### Observability and state
 
-- **FR-022**: Structured logs and a machine-readable status surface MUST expose: current local Coordinator head, remote reviewed head when known, last update attempt timestamp, last result, and reason for skip/fail-closed.
-- **FR-023**: Updater state MUST NOT store secrets.
+- **FR-032**: Structured logs and a machine-readable status surface MUST expose: current local Coordinator head, remote reviewed head when known, last update attempt timestamp, last result, and reason for skip/fail-closed.
+- **FR-033**: Updater state MUST NOT store secrets.
 
 #### Testing and governance
 
-- **FR-024**: Automated tests MUST cover: already-current no-op; clean fast-forward; dirty refusal; diverged refusal; wrong branch/origin refusal; active Coordinator lock skip/retry; successful update triggers exactly one runner restart; failed/no-op update triggers no restart; installer idempotence.
-- **FR-025**: Tests MUST use fake git/systemctl/lock behavior; live systemd mutation on the host is forbidden in tests.
-- **FR-026**: Hosted CI remains forbidden for this package unless separately authorized.
-- **FR-027**: No `src/ai_core/**`, provider/runtime/tracing, consumer repository, platform-control contract, or deployment behavior may change as part of this feature.
+- **FR-034**: Automated tests MUST cover: already-current no-op (no runner stop); clean fast-forward; dirty refusal; diverged refusal; wrong branch/origin refusal; successful update triggers exactly one runner restart; failed/no-op update triggers no restart; installer idempotence.
+- **FR-035**: Automated tests MUST explicitly cover maintenance-gate and post-stop failure scenarios:
+  1. runner holds maintenance shared during active scan/package → updater cannot acquire exclusive and performs zero stop/merge/start;
+  2. updater holds maintenance exclusive → runner skips scan without terminalizing any discovered package;
+  3. updater holds Coordinator process lock during stop+merge+start critical section;
+  4. lock ordering has no deadlock in fake/concurrent harness;
+  5. unexpected ff failure + proven unchanged clean checkout → old runner restored once, `FAIL_CLOSED` recorded;
+  6. unexpected ff failure + uncertain/changed state → runner remains stopped, `HUMAN_REQUIRED`/`FAIL_CLOSED` recorded;
+  7. no-op path never stops runner.
+- **FR-036**: Tests MUST use fake git/systemctl/lock behavior; live systemd mutation on the host is forbidden in tests.
+- **FR-037**: Hosted CI remains forbidden for this package unless separately authorized.
+- **FR-038**: No `src/ai_core/**`, provider/runtime/tracing, consumer repository, platform-control contract, or deployment behavior may change as part of this feature. Minimal runner/lock changes for maintenance-gate cooperation are in scope.
 
 ### Key Entities
 
 - **UpdaterConfig**: coordinator repo root, expected origin URL, transition branch name, poll/timer interval, runner service name, state/log locations.
 - **UpdaterState**: local head, remote head (last known), last attempt time, last result (`NOOP`, `SUCCESS`, `SKIPPED`, `FAIL_CLOSED`), reason code, previous head on last success.
 - **UpdateAttempt**: one timer-triggered evaluation with precondition checks, optional runner stop, optional fast-forward, optional runner restart, and terminal classification.
-- **CoordinatorProcessLock**: existing exclusive lock file used by one-shot Coordinator; updater must treat lock presence as skip/retry.
-- **UpdaterExclusionLock**: separate short-lived lock preventing concurrent updater runs.
+- **MaintenanceGateLock**: shared/exclusive flock at `${state_dir}/locks/coordinator-maintenance.lock`; runner holds shared during scan/package; updater holds exclusive during update window.
+- **CoordinatorProcessLock**: existing exclusive lock at `${state_dir}/locks/coordinator.lock`; held by one-shot Coordinator and by updater during critical stop+merge+start window.
+- **UpdaterExclusionLock**: separate short-lived lock at `${state_dir}/locks/coordinator-updater.lock` preventing concurrent updater runs.
 
 ## Success Criteria
 
@@ -178,10 +204,11 @@ As the operator, I want to see whether self-update is current, skipped, or block
 - **SC-001**: After one-time updater activation, a newly merged reviewed transition commit is reflected locally without any manual `git fetch/merge` or `systemctl restart` command.
 - **SC-002**: Under normal network conditions and idle runner, a single new fast-forward transition commit is applied within two updater cycles at default cadence.
 - **SC-003**: Every tested unsafe git case produces zero local mutation and zero runner restart.
-- **SC-004**: When the Coordinator process lock is held, updater produces zero runner stop/restart events and retries successfully after lock release.
+- **SC-004**: When maintenance shared or Coordinator process lock blocks update, updater produces zero runner stop/restart events and retries successfully after gate release.
+- **SC-004a**: When updater holds maintenance exclusive, runner produces zero terminal candidate failures for skipped scans and resumes normal processing after gate release.
 - **SC-005**: A successful head change produces exactly one runner restart; no-op and failed attempts produce zero runner restarts.
 - **SC-006**: Disabling updater timer/service leaves the persistent runner usable on its last known-good checkout; manual one-shot Coordinator remains available.
-- **SC-007**: Existing runner and Coordinator safety tests remain green; new updater tests cover all FR-024 scenarios with fakes only.
+- **SC-007**: Existing runner and Coordinator safety tests remain green; new updater tests cover FR-034 and FR-035 scenarios with fakes only.
 
 ## Assumptions
 
@@ -189,6 +216,7 @@ As the operator, I want to see whether self-update is current, skipped, or block
 - Git authentication to GitHub continues to work for the operator account.
 - Architect continues to land Coordinator tooling changes only via reviewed merge into the configured transition branch.
 - The persistent runner package (`001-persistent-coordinator-runner`) is implemented and activatable; self-update builds on that foundation.
-- The existing Coordinator process lock at `${state_dir}/locks/coordinator.lock` remains the authoritative in-flight execution guard.
+- The existing Coordinator process lock at `${state_dir}/locks/coordinator.lock` remains the authoritative in-flight execution guard for one-shot Coordinator; maintenance gate adds deterministic runner/updater coordination on top.
+- Shared/exclusive flock semantics on a single lock file require a small lock helper (e.g. extending `tools/dev_coordinator/locks.py`); runner acquires shared maintenance before each scan cycle.
 - `.specify/memory/constitution.md` is unratified; operative governance is `AGENTS.md`, platform-control, and `docs/coordination/TRANSITION_PLAN.md`.
 - Exceptional fail-closed states may still require operator intervention; the goal is elimination of routine per-update maintenance, not removal of all human recovery paths.

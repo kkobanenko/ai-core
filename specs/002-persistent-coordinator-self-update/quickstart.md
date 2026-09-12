@@ -70,7 +70,7 @@ Should display:
 
 1. Architect reviews and merges Coordinator tooling into `chore/coordinator-transition-v0.1-20260911` on GitHub.
 2. Within ~1–2 minutes (default timer), updater fetches `origin`, verifies preconditions, and fast-forwards local checkout if clean and ff-only eligible.
-3. If HEAD changed and no package lock was held, updater restarts the persistent runner once.
+3. If HEAD changed and maintenance gate + process lock prove no active scan/package, updater restarts the persistent runner once.
 4. Operator continues using `Твой ход` / Architect bridge workflow without manual git or restart commands.
 
 No per-update terminal command is required after bootstrap.
@@ -91,11 +91,13 @@ Common recorded reasons:
 
 | Reason | Meaning | Operator action |
 | --- | --- | --- |
-| `lock_held` | Coordinator executing a package | wait; updater retries |
+| `maintenance_held` | runner has active scan/package (shared maintenance) | wait; updater retries on next cycle |
+| `process_lock_held` | manual one-shot Coordinator or lock contention | wait for one-shot to finish; updater retries |
 | `dirty_worktree` | local uncommitted changes | commit/stash manually or reset intentionally |
 | `diverged` | non-ff history | manual reconcile; updater will not force |
 | `wrong_branch` / `wrong_origin` | checkout misconfigured | fix checkout to canonical transition clone |
-| `ff_refused` | merge not fast-forward | inspect git log; manual recovery |
+| `ff_refused` | merge not fast-forward; state uncertain | inspect git log; manual recovery; runner may be stopped |
+| `ff_refused_recoverable` | ff failed but checkout proven unchanged; runner restored once | inspect cause; updater retries on later cycle |
 | `fetch_error` | network/auth issue | fix connectivity; retry |
 
 Updater never auto-repairs these states.
@@ -121,5 +123,8 @@ systemctl --user disable --now ai-core-dev-coordinator-runner.service
 
 - Default updater cadence is ~60 seconds; runner polling remains ~15 seconds — they are independent.
 - Self-update never tracks `main`/`master` or feature branches.
+- Maintenance gate: runner holds **shared** during scans; updater holds **exclusive** during update. Runner skips scans (without terminal failures) while updater maintains exclusive.
+- Manual one-shot Coordinator does not use maintenance gate; updater holds Coordinator process lock during mutation so concurrent manual launch fails safely.
+- A restarted runner may run under updater maintenance exclusive but will not process candidates until exclusive is released.
 - Implementation and automated tests must not silently enable the live updater timer on the developer workstation.
 - Hosted CI is forbidden for this feature unless separately authorized.

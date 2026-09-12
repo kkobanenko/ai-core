@@ -6,7 +6,7 @@
 
 ## Summary
 
-Add a conservative, fail-closed self-update path for the Coordinator tooling checkout and persistent runner. A separate `systemd --user` timer invokes an oneshot updater that: fetches `origin`, verifies canonical repo/branch/clean/ff-only preconditions, respects the Coordinator process lock, stops the runner only when needed, fast-forwards the configured transition branch, and restarts the runner exactly once on successful head change. Extend the existing idempotent installer with a one-time updater activation boundary. Spec-only in this package; implementation follows in a separate package.
+Add a conservative, fail-closed self-update path for the Coordinator tooling checkout and persistent runner. A separate `systemd --user` timer invokes an oneshot updater that: fetches `origin`, verifies canonical repo/branch/clean/ff-only preconditions, acquires maintenance gate exclusive + Coordinator process lock with deterministic ordering (no timing-dependent probes), stops the runner only when gates prove no active scan/package, fast-forwards the configured transition branch, and restarts the runner exactly once on successful head change. The persistent runner acquires maintenance gate shared before each scan and skips without terminalizing candidates when updater holds exclusive. Extend the existing idempotent installer with a one-time updater activation boundary. Spec-only in this package; implementation follows in a separate package.
 
 ## Technical Context
 
@@ -24,7 +24,7 @@ Add a conservative, fail-closed self-update path for the Coordinator tooling che
 
 **Performance Goals**: detect and apply a new transition head within ~2 minutes at default 60s timer; negligible idle cost; no restart loops
 
-**Constraints**: fail closed; ff-only; no force/reset/clean/rebase/stash; no inline runner self-mutation; no secrets in state; no hosted CI; no `src/ai_core/**` changes; coordinate with existing `coordinator.lock`
+**Constraints**: fail closed; ff-only; no force/reset/clean/rebase/stash; no inline runner self-mutation; no secrets in state; no hosted CI; no `src/ai_core/**` changes; maintenance gate + `coordinator.lock` with explicit lock ordering; minimal runner/lock module changes required
 
 **Scale/Scope**: single operator workstation; single canonical Coordinator checkout; transition branch `chore/coordinator-transition-v0.1-20260911`
 
@@ -36,7 +36,7 @@ Pre-design gates:
 
 - PASS — deterministic Python owns update decisions; LLM/Executor gains no authority.
 - PASS — update source is only Architect-reviewed transition branch merges on GitHub.
-- PASS — existing Coordinator claim/process-lock semantics preserved; updater skips when lock held.
+- PASS — maintenance gate + Coordinator process lock provide deterministic runner/updater coordination; no timing-dependent race between probe and stop.
 - PASS — tooling-plane only; ai-core runtime/provider/tracing untouched.
 - PASS — failures fail-closed with diagnosable state; no auto-repair of dirty/diverged git.
 - PASS — bootstrap requires explicit one-time operator activation.
@@ -58,20 +58,34 @@ Architect merge → transition branch on GitHub
                          ↓
         git fetch origin (Coordinator checkout)
                          ↓
-     remote == local HEAD? → NOOP (no runner restart)
+     remote == local HEAD? → NOOP (no runner stop/restart)
                          ↓
-   process lock free + clean + correct branch/origin?
-         no → SKIP/FAIL_CLOSED (retry later)
+   acquire maintenance gate EXCLUSIVE (non-blocking)
+         fail → SKIPPED maintenance_held (zero stop/merge/start)
+                         ↓
+   acquire Coordinator process lock (non-blocking)
+         fail → release maintenance, SKIPPED process_lock_held
+                         ↓
+   verify clean + correct branch/origin + ff-only mergeability
+         fail → release locks, FAIL_CLOSED
                          ↓
         stop runner.service
                          ↓
-        re-verify lock + ff-only mergeability
-                         ↓
    git merge --ff-only origin/<transition-branch>
+         fail → verify unchanged/clean → restore runner once OR HUMAN_REQUIRED
                          ↓
    HEAD changed? → start runner.service once
                          ↓
+   release Coordinator process lock → maintenance exclusive → exclusion
+                         ↓
         persist updater state + journal log
+
+Runner path (each poll):
+   acquire maintenance gate SHARED (non-blocking)
+         fail → skip scan (no terminal failures), retry next poll
+   scan + candidate processing + run_once (holds shared through work)
+   acquire Coordinator process lock only when launching run_once
+   release process lock → release maintenance shared
 ```
 
 ### Authority model
@@ -96,16 +110,37 @@ Configuration is operator/installer supplied only. Remote bridge prompts cannot 
 
 Forbidden commands: `reset`, `clean`, `checkout` (branch switch), `rebase`, `stash`, `pull`, force fetch, remote other than `origin`.
 
-### Lock coordination
+### Lock coordination (maintenance gate + deterministic ordering)
 
-Reuse `tools.dev_coordinator.locks.ProcessLock` against `${state_dir}/locks/coordinator.lock` in **non-blocking probe** mode before runner stop.
+Three coordinated locks:
 
-Updater exclusion lock: `${state_dir}/locks/coordinator-updater.lock`, held for entire oneshot execution.
+| Lock | Path | Holder | Mode |
+| --- | --- | --- | --- |
+| Updater exclusion | `${state_dir}/locks/coordinator-updater.lock` | updater oneshot | exclusive |
+| Maintenance gate | `${state_dir}/locks/coordinator-maintenance.lock` | runner (scan/package) | shared |
+| Maintenance gate | same | updater (update window) | exclusive |
+| Coordinator process | `${state_dir}/locks/coordinator.lock` | one-shot Coordinator; updater (critical section) | exclusive |
 
-Race policy:
+**Lock ordering (deadlock-free)**:
 
-- If process lock becomes held after runner stop but before merge: abort merge attempt, leave runner stopped, record `lock_held_after_stop` for operator attention (fail-closed).
-- If merge fails after runner stop: do not start runner automatically in a loop; record `ff_refused`; operator uses documented recovery.
+- Runner: maintenance(shared) → Coordinator process lock (only when `run_once` launches)
+- Updater: updater exclusion → maintenance(exclusive) → Coordinator process lock
+
+Release in reverse order. Implementation extends `tools/dev_coordinator/locks.py` with shared/exclusive maintenance gate helper; runner changes in `tools/dev_coordinator/runner.py` acquire shared maintenance before each scan.
+
+**Race policy (no timing dependence)**:
+
+- Updater MUST NOT stop runner until maintenance exclusive + Coordinator process lock are both held; this proves no active scan/package can exist.
+- If maintenance exclusive acquisition fails: `SKIPPED` / `maintenance_held`; zero stop/merge/start.
+- If Coordinator process lock acquisition fails after maintenance exclusive: release maintenance, `SKIPPED` / `process_lock_held`.
+- Manual one-shot Coordinator does not acquire maintenance gate; updater holding process lock prevents concurrent manual launch during mutation. Document exceptional behavior if manual launch races before updater acquires process lock.
+- A restarted runner may start under updater maintenance exclusive but MUST NOT process candidates until exclusive is released.
+
+**Post-stop failure policy**:
+
+- If ff-only fails after runner stop, verify local HEAD/worktree equals pre-update clean snapshot.
+- Proven unchanged/clean: MAY `systemctl --user start` runner once, record `FAIL_CLOSED` / `ff_refused_recoverable`, retry on later timer cycle only.
+- Uncertain or changed state: runner stays stopped, `HUMAN_REQUIRED` / `ff_refused`; never reset/clean/force; never tight restart loop.
 
 ### Service supervision
 
@@ -180,7 +215,8 @@ specs/002-persistent-coordinator-self-update/
 tools/dev_coordinator/
 ├── updater.py              # oneshot update orchestration
 ├── updater_config.py       # strict JSON parsing
-└── locks.py                # reuse ProcessLock; optional thin wrapper
+├── locks.py                # ProcessLock + MaintenanceGateLock (shared/exclusive)
+└── runner.py               # minimal change: shared maintenance before scan
 
 scripts/
 └── install_dev_coordinator_runner.py   # extended with updater units/flags
@@ -207,12 +243,16 @@ docs/coordination/
 4. Fake-git: dirty tree → FAIL_CLOSED, no stop/start.
 5. Fake-git: diverged → FAIL_CLOSED, no merge.
 6. Fake-git: wrong branch / wrong origin → FAIL_CLOSED.
-7. Fake-lock: process lock held → SKIP, no stop/start.
-8. Fake-lock: lock appears after stop → FAIL_CLOSED, runner not restarted automatically.
-9. Fake-systemctl: failure path does not loop restart.
-10. Installer idempotence with injected systemctl.
-11. Regression: full existing runner + coordinator test suites remain green.
-12. Manual smoke (implementation package): `--once` updater dry run against test clone; no live timer in CI.
+7. Fake-lock: runner holds maintenance shared → updater SKIP, zero stop/merge/start.
+8. Fake-lock: updater holds maintenance exclusive → runner skips scan, no terminal candidate failures.
+9. Fake-lock: updater holds Coordinator process lock during stop+merge+start critical section.
+10. Fake-concurrent harness: lock ordering produces no deadlock.
+11. Fake-git + fake-systemctl: ff failure + proven unchanged clean → runner restored once, `FAIL_CLOSED`.
+12. Fake-git + fake-systemctl: ff failure + uncertain/changed state → runner stopped, `HUMAN_REQUIRED`.
+13. Fake-systemctl: no-op path never stops runner; failure path does not loop restart.
+14. Installer idempotence with injected systemctl.
+15. Regression: full existing runner + coordinator test suites remain green.
+16. Manual smoke (implementation package): `--once` updater dry run against test clone; no live timer in CI.
 
 ## Rollback
 
@@ -232,7 +272,8 @@ Runner continues on last known-good checkout. Disable runner separately if neede
 | In scope (implementation) | Out of scope |
 | --- | --- |
 | updater module, units, installer extension, tests, docs section | `src/ai_core/**` |
-| fake harness tests | hosted CI |
+| `MaintenanceGateLock` in `locks.py`; runner shared-maintenance cooperation | manual one-shot maintenance-gate awareness |
+| fake harness tests (incl. concurrent lock-ordering) | hosted CI |
 | `PERSISTENT_RUNNER.md` self-update section | platform-control contract changes |
 | local smoke `--once` | live timer enable in tests |
 | handoff for implementation merge | PR creation by Executor |
