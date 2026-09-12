@@ -8,20 +8,12 @@ target_worktree: /home/kok4444/projects/.coordinator-worktrees/ai-core/feat-002-
 base_sha: 59973911dd4e6186f66aabbf65909cf9a6c95858
 hosted_ci: forbidden
 max_executor_runs: 1
-allowed_paths:
-  - tools/dev_coordinator/updater.py
-  - tests/test_dev_coordinator_updater.py
-  - specs/002-persistent-coordinator-self-update/tasks.md
-  - docs/handoffs/2026-09-12-persistent-coordinator-self-update-impl.md
-required_paths:
-  - tools/dev_coordinator/updater.py
-  - tests/test_dev_coordinator_updater.py
-transient_paths:
-  - uv.lock
-publication:
-  commit: true
-  push: true
-  commit_message: "fix(coord): preserve updater recovery state"
+allowed_paths: tools/dev_coordinator/updater.py, tests/test_dev_coordinator_updater.py, specs/002-persistent-coordinator-self-update/tasks.md, docs/handoffs/2026-09-12-persistent-coordinator-self-update-impl.md
+required_paths: tools/dev_coordinator/updater.py, tests/test_dev_coordinator_updater.py
+transient_paths: uv.lock
+publication_commit: true
+publication_push: true
+commit_message: "fix(coord): preserve updater recovery state"
 ---
 
 # Architect review-fix 1 — sticky post-stop recovery state
