@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -93,9 +94,28 @@ def load_runner_state(path: Path) -> dict[str, Any]:
 def save_runner_state(path: Path, state: dict[str, Any]) -> None:
     """Атомарно сохранить состояние runner."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    # Уникальный temp на каждую запись: общий .tmp путь гоняется при concurrency.
+    tmp: Optional[Path] = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+        )
+        os.close(fd)
+        tmp = Path(tmp_name)
+        tmp.write_text(
+            json.dumps(state, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+        tmp = None
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def is_terminal_package(state: dict[str, Any], key: str) -> bool:

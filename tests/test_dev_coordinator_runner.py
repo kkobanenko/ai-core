@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -747,6 +748,55 @@ class TestRunnerState:
         save_runner_state(state_path, state)
         reloaded = load_runner_state(state_path)
         assert is_terminal_package(reloaded, key)
+
+    def test_concurrent_save_runner_state_no_temp_collision(
+        self, tmp_path: Path
+    ) -> None:
+        """Параллельные save_runner_state не делят один .tmp и не падают с ENOENT."""
+        state_path = tmp_path / "runner-state.json"
+        errors: list[str] = []
+        barrier = threading.Barrier(8)
+
+        def writer(index: int) -> None:
+            try:
+                barrier.wait(timeout=5)
+                state = load_runner_state(state_path)
+                key = package_key(
+                    "kkobanenko/ai-core",
+                    "coord/bridge/pkg",
+                    f"sha_{index}",
+                )
+                record_package_result(
+                    state,
+                    key=key,
+                    bridge_repo="kkobanenko/ai-core",
+                    bridge_branch="coord/bridge/pkg",
+                    bridge_sha=f"sha_{index}",
+                    prompt_id=f"p{index}",
+                    target_repo="kkobanenko/ai-core",
+                    target_branch=f"feat/{index}",
+                    status="SUCCESS",
+                    reason="ok",
+                )
+                save_runner_state(state_path, state)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(str(exc))
+
+        threads = [
+            threading.Thread(target=writer, args=(i,)) for i in range(8)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+
+        assert errors == []
+        assert not (tmp_path / "runner-state.json.tmp").exists()
+        leftover = list(tmp_path.glob(".runner-state.json.*.tmp"))
+        assert leftover == []
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+        assert isinstance(data.get("packages"), dict)
 
     def test_changed_sha_not_terminal(self, tmp_path: Path) -> None:
         state_path = tmp_path / "runner-state.json"
