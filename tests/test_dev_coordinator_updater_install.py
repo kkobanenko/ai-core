@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from scripts.install_dev_coordinator_runner import (
+    _SERVICE_NAME,
+    _UPDATER_TIMER_NAME,
     install_runner,
     render_updater_timer,
     render_updater_unit,
@@ -107,7 +109,8 @@ def test_idempotent_reinstall(fake_home: Path) -> None:
     assert Path(outcome2["updater_config_path"]).is_file()
 
 
-def test_enable_updater_invokes_systemctl(fake_home: Path) -> None:
+def test_enable_updater_restarts_runner_before_timer(fake_home: Path) -> None:
+    """Updater bootstrap: explicit runner restart before timer enable."""
     paths = _layout(fake_home)
     calls: list[list[str]] = []
 
@@ -125,8 +128,154 @@ def test_enable_updater_invokes_systemctl(fake_home: Path) -> None:
         systemctl_runner=fake_systemctl,
     )
     assert outcome["updater_enabled"] == "true"
-    assert ["daemon-reload"] in calls
-    assert ["enable", "--now", "ai-core-dev-coordinator-updater.timer"] in calls
+    assert outcome["enabled"] == "true"
+    assert calls == [
+        ["daemon-reload"],
+        ["enable", _SERVICE_NAME],
+        ["restart", _SERVICE_NAME],
+        ["enable", "--now", _UPDATER_TIMER_NAME],
+    ]
+
+
+def test_enable_updater_with_enable_single_restart(fake_home: Path) -> None:
+    """--enable + --enable-updater: один restart, без enable --now runner."""
+    paths = _layout(fake_home)
+    calls: list[list[str]] = []
+
+    def fake_systemctl(args):
+        calls.append(list(args))
+        return 0, "", ""
+
+    outcome = install_runner(
+        coordinator_repo=paths["coord"],
+        managed_worktree_root=paths["managed"],
+        repositories={"kkobanenko/ai-core": paths["ai_core"]},
+        python_bin=str(paths["python"]),
+        agent_bin=str(paths["agent"]),
+        enable=True,
+        enable_updater=True,
+        systemctl_runner=fake_systemctl,
+    )
+    assert outcome["enabled"] == "true"
+    assert outcome["updater_enabled"] == "true"
+    assert calls.count(["restart", _SERVICE_NAME]) == 1
+    assert ["enable", "--now", _SERVICE_NAME] not in calls
+    assert calls == [
+        ["daemon-reload"],
+        ["enable", _SERVICE_NAME],
+        ["restart", _SERVICE_NAME],
+        ["enable", "--now", _UPDATER_TIMER_NAME],
+    ]
+
+
+def test_enable_updater_daemon_reload_failure_blocks_activation(
+    fake_home: Path,
+) -> None:
+    paths = _layout(fake_home)
+    calls: list[list[str]] = []
+
+    def fake_systemctl(args):
+        if args == ["daemon-reload"]:
+            return 1, "", "reload failed"
+        calls.append(list(args))
+        return 0, "", ""
+
+    with pytest.raises(RuntimeError, match="daemon-reload"):
+        install_runner(
+            coordinator_repo=paths["coord"],
+            managed_worktree_root=paths["managed"],
+            repositories={"kkobanenko/ai-core": paths["ai_core"]},
+            python_bin=str(paths["python"]),
+            agent_bin=str(paths["agent"]),
+            enable_updater=True,
+            systemctl_runner=fake_systemctl,
+        )
+    assert calls == []
+
+
+def test_enable_updater_runner_restart_failure_blocks_timer(
+    fake_home: Path,
+) -> None:
+    paths = _layout(fake_home)
+    calls: list[list[str]] = []
+
+    def fake_systemctl(args):
+        calls.append(list(args))
+        if args == ["restart", _SERVICE_NAME]:
+            return 1, "", "restart failed"
+        return 0, "", ""
+
+    with pytest.raises(RuntimeError, match="restart runner"):
+        install_runner(
+            coordinator_repo=paths["coord"],
+            managed_worktree_root=paths["managed"],
+            repositories={"kkobanenko/ai-core": paths["ai_core"]},
+            python_bin=str(paths["python"]),
+            agent_bin=str(paths["agent"]),
+            enable_updater=True,
+            systemctl_runner=fake_systemctl,
+        )
+    assert ["enable", "--now", _UPDATER_TIMER_NAME] not in calls
+
+
+def test_enable_updater_timer_enable_failure_surfaces_error(
+    fake_home: Path,
+) -> None:
+    paths = _layout(fake_home)
+    calls: list[list[str]] = []
+
+    def fake_systemctl(args):
+        calls.append(list(args))
+        if args == ["enable", "--now", _UPDATER_TIMER_NAME]:
+            return 1, "", "timer failed"
+        return 0, "", ""
+
+    with pytest.raises(RuntimeError, match="updater timer"):
+        install_runner(
+            coordinator_repo=paths["coord"],
+            managed_worktree_root=paths["managed"],
+            repositories={"kkobanenko/ai-core": paths["ai_core"]},
+            python_bin=str(paths["python"]),
+            agent_bin=str(paths["agent"]),
+            enable_updater=True,
+            systemctl_runner=fake_systemctl,
+        )
+    assert ["restart", _SERVICE_NAME] in calls
+    assert calls.count(["enable", "--now", _UPDATER_TIMER_NAME]) == 1
+
+
+def test_enable_updater_idempotent_single_restart_per_invocation(
+    fake_home: Path,
+) -> None:
+    paths = _layout(fake_home)
+    calls: list[list[str]] = []
+
+    def fake_systemctl(args):
+        calls.append(list(args))
+        return 0, "", ""
+
+    install_runner(
+        coordinator_repo=paths["coord"],
+        managed_worktree_root=paths["managed"],
+        repositories={"kkobanenko/ai-core": paths["ai_core"]},
+        python_bin=str(paths["python"]),
+        agent_bin=str(paths["agent"]),
+        enable_updater=True,
+        systemctl_runner=fake_systemctl,
+    )
+    first_restart_count = calls.count(["restart", _SERVICE_NAME])
+    assert first_restart_count == 1
+
+    install_runner(
+        coordinator_repo=paths["coord"],
+        managed_worktree_root=paths["managed"],
+        repositories={"kkobanenko/ai-core": paths["ai_core"]},
+        python_bin=str(paths["python"]),
+        agent_bin=str(paths["agent"]),
+        enable_updater=True,
+        systemctl_runner=fake_systemctl,
+    )
+    assert calls.count(["restart", _SERVICE_NAME]) == 2
 
 
 def test_rendered_updater_units(fake_home: Path) -> None:

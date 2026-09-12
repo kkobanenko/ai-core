@@ -8,10 +8,11 @@ Date: 2026-09-12
 | --- | --- |
 | Branch | `feat/002-persistent-coordinator-self-update-20260912` |
 | Base SHA | `d2e13bfe93f11ded0cebb5bd1285cc92d00435ad` |
-| Head SHA | *(pending Coordinator publication commit after review-fix 3)* |
+| Head SHA | *(pending Coordinator publication commit after review-fix 4)* |
 | Review-fix 1 base | `59973911dd4e6186f66aabbf65909cf9a6c95858` |
 | Review-fix 2 base | `319524d62ffd769d9056986a61a3cfd4e02f8aed` |
 | Review-fix 3 base | `8317cb4aabab354d4f9ff3beeb8140658aeea5e8` |
+| Review-fix 4 base | `b26de225a7d7d7c24bc7ef182e1eea57908ab896` |
 
 ## Summary
 
@@ -52,6 +53,13 @@ Implemented fail-closed Coordinator tooling self-update per `specs/002-persisten
 - **Strict durable state**: `load_updater_state_strict` fails closed on corrupt JSON or unsupported version; present-but-invalid `pending_update` → `HUMAN_REQUIRED / pending_update_invalid` with no fetch/systemctl/git mutation and no state overwrite; `--status` exposes `state_load_error` when strict load fails.
 - Added `TestUpdaterReviewFix3` and `test_exclusion_busy_does_not_alter_state` regression tests.
 
+### Architect review-fix 4 (restart-safe updater bootstrap)
+
+- **`--enable-updater` activation contract**: deterministic `daemon-reload` → runner `enable` → explicit `restart` → updater timer `enable --now`. Never enables timer unless runner restart succeeds on the installed unit.
+- **`--enable-updater` implies runner activation** in the same installer transaction; combining with `--enable` uses the updater bootstrap path (one restart, no redundant runner `enable --now`).
+- **Fail-closed ordering**: `daemon-reload` or runner restart failure prevents timer enable; timer enable failure surfaces installer error (runner may remain on new code).
+- Installer tests inject fake `systemctl_runner`; no live systemd activation from Executor.
+
 ## Changed files
 
 | Path | Change |
@@ -60,11 +68,11 @@ Implemented fail-closed Coordinator tooling self-update per `specs/002-persisten
 | `tools/dev_coordinator/updater.py` | new; review-fix 1 + 2 + 3 |
 | `tools/dev_coordinator/locks.py` | extended |
 | `tools/dev_coordinator/runner.py` | maintenance gate wrapper |
-| `scripts/install_dev_coordinator_runner.py` | updater install + flags |
+| `scripts/install_dev_coordinator_runner.py` | updater install + restart-safe bootstrap |
 | `ops/systemd/ai-core-dev-coordinator-updater.service.in` | new |
 | `ops/systemd/ai-core-dev-coordinator-updater.timer.in` | new |
 | `tests/test_dev_coordinator_updater.py` | new; review-fix 1 + 2 + 3 tests |
-| `tests/test_dev_coordinator_updater_install.py` | new |
+| `tests/test_dev_coordinator_updater_install.py` | new; review-fix 4 bootstrap ordering tests |
 | `docs/coordination/PERSISTENT_RUNNER.md` | self-update + pending recovery |
 | `specs/002-persistent-coordinator-self-update/tasks.md` | T033b bookkeeping |
 | `docs/handoffs/2026-09-12-persistent-coordinator-self-update-impl.md` | this file |
@@ -110,7 +118,17 @@ PYTHONPATH=. python3.10 -m pytest -q \
 git diff --check 8317cb4aabab354d4f9ff3beeb8140658aeea5e8 HEAD
 ```
 
-**Executor session (review-fix 3):** shell commands unavailable/rejected; tests authored but not executed. Coordinator must verify before merge.
+**Review-fix 4 gate (Coordinator / operator should run locally):**
+
+```bash
+PYTHONPATH=. python3.10 -m pytest -q \
+  tests/test_dev_coordinator_updater_install.py \
+  tests/test_dev_coordinator_runner_install.py
+
+git diff --check b26de225a7d7d7c24bc7ef182e1eea57908ab896 HEAD
+```
+
+**Executor session (review-fix 4):** shell commands unavailable/rejected; tests authored but not executed. Coordinator must verify before merge.
 
 ## Risks
 
@@ -126,6 +144,8 @@ git diff --check 8317cb4aabab354d4f9ff3beeb8140658aeea5e8 HEAD
 | `updater_busy` overwrites lock-owner state (review-fix 3) | Exclusion acquired before state load; busy path is read/write-free |
 | Corrupt `updater-state.json` silently reset (review-fix 3) | Strict load fails closed; status exposes `state_load_error` |
 | ff refusal + failed runner restore loses marker (review-fix 3) | `pending_update` preserved; next tick start-only recovery |
+| Old runner still active after unit rewrite (review-fix 4) | `--enable-updater` requires explicit restart before timer enable |
+| Timer enabled while runner on stale code (review-fix 4) | Fail-closed: restart failure blocks timer enable |
 
 ## Rollback
 

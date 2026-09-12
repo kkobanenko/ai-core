@@ -193,10 +193,8 @@ def install_updater(
     timer_interval: int,
     state_dir: Path,
     python_bin: Path,
-    enable_updater: bool = False,
-    systemctl_runner: SystemctlRunner = _default_systemctl,
 ) -> dict[str, str]:
-    """Установить updater config + units; опционально enable timer."""
+    """Установить updater config + units (без systemctl activation)."""
     config = build_updater_config(
         coordinator_repo=coordinator_repo.resolve(),
         transition_branch=transition_branch,
@@ -219,23 +217,39 @@ def install_updater(
     timer_path = _systemd_user_dir() / _UPDATER_TIMER_NAME
     write_unit(timer_content, timer_path)
 
-    result = {
+    return {
         "updater_config_path": str(config_path),
         "updater_service_path": str(service_path),
         "updater_timer_path": str(timer_path),
         "updater_enabled": "false",
     }
 
-    if enable_updater:
-        code, out, err = systemctl_runner(["daemon-reload"])
-        if code != 0:
-            raise RuntimeError(f"systemctl daemon-reload failed: {err or out}")
-        code, out, err = systemctl_runner(["enable", "--now", _UPDATER_TIMER_NAME])
-        if code != 0:
-            raise RuntimeError(f"systemctl enable --now updater timer failed: {err or out}")
-        result["updater_enabled"] = "true"
 
-    return result
+def _activate_updater_bootstrap(
+    systemctl_runner: SystemctlRunner,
+) -> None:
+    """Fail-closed bootstrap: runner enable+restart, затем updater timer.
+
+    Порядок детерминированный — один daemon-reload и один restart runner
+    за вызов. Не полагаемся на enable --now как доказательство re-exec.
+    """
+    code, out, err = systemctl_runner(["daemon-reload"])
+    if code != 0:
+        raise RuntimeError(f"systemctl daemon-reload failed: {err or out}")
+
+    code, out, err = systemctl_runner(["enable", _SERVICE_NAME])
+    if code != 0:
+        raise RuntimeError(f"systemctl enable runner failed: {err or out}")
+
+    code, out, err = systemctl_runner(["restart", _SERVICE_NAME])
+    if code != 0:
+        raise RuntimeError(f"systemctl restart runner failed: {err or out}")
+
+    code, out, err = systemctl_runner(["enable", "--now", _UPDATER_TIMER_NAME])
+    if code != 0:
+        raise RuntimeError(
+            f"systemctl enable --now updater timer failed: {err or out}"
+        )
 
 
 def install_runner(
@@ -292,17 +306,6 @@ def install_runner(
         "enabled": "false",
     }
 
-    if enable:
-        code, out, err = systemctl_runner(["daemon-reload"])
-        if code != 0:
-            raise RuntimeError(f"systemctl daemon-reload failed: {err or out}")
-        code, out, err = systemctl_runner(
-            ["enable", "--now", _SERVICE_NAME]
-        )
-        if code != 0:
-            raise RuntimeError(f"systemctl enable --now failed: {err or out}")
-        result["enabled"] = "true"
-
     from tools.dev_coordinator.paths import default_state_dir
 
     updater_outcome = install_updater(
@@ -312,10 +315,25 @@ def install_runner(
         timer_interval=updater_timer_interval,
         state_dir=state_dir or default_state_dir(),
         python_bin=py,
-        enable_updater=enable_updater,
-        systemctl_runner=systemctl_runner,
     )
     result.update(updater_outcome)
+
+    if enable_updater:
+        # --enable-updater гарантирует runner activation в той же транзакции:
+        # enable + explicit restart на новый unit, затем timer (fail-closed).
+        _activate_updater_bootstrap(systemctl_runner)
+        result["enabled"] = "true"
+        result["updater_enabled"] = "true"
+    elif enable:
+        code, out, err = systemctl_runner(["daemon-reload"])
+        if code != 0:
+            raise RuntimeError(f"systemctl daemon-reload failed: {err or out}")
+        code, out, err = systemctl_runner(
+            ["enable", "--now", _SERVICE_NAME]
+        )
+        if code != 0:
+            raise RuntimeError(f"systemctl enable --now failed: {err or out}")
+        result["enabled"] = "true"
 
     return result
 
@@ -367,7 +385,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--enable-updater",
         action="store_true",
-        help="daemon-reload and enable --now updater timer (after units written)",
+        help=(
+            "Fail-closed updater bootstrap: daemon-reload, enable+restart runner "
+            "on reviewed unit, then enable updater timer (implies runner activation)"
+        ),
     )
     parser.add_argument(
         "--transition-branch",

@@ -153,9 +153,15 @@ python3.10 scripts/install_dev_coordinator_runner.py \
   --enable-updater
 ```
 
-- `--enable` activates the persistent runner service.
-- `--enable-updater` activates the self-update timer (bootstrap boundary for automatic transition advances).
-- Without these flags, the installer writes config and unit files only.
+- `--enable` activates the persistent runner service (`daemon-reload`, `enable --now`).
+- `--enable-updater` performs fail-closed updater bootstrap in one transaction:
+  1. write runner + updater config/units;
+  2. `daemon-reload`;
+  3. `enable` runner;
+  4. explicit `restart` runner (replaces an already-running old process on new unit/code);
+  5. only if restart succeeds: `enable --now` updater timer.
+- `--enable-updater` implies runner activation; it never reports `updater_enabled=true` unless runner restart succeeded on the installed version. Combining `--enable` with `--enable-updater` uses the updater bootstrap path (one restart, no redundant `enable --now` for runner).
+- Without activation flags, the installer writes config and unit files only.
 
 ### Status (read-only)
 
@@ -208,8 +214,11 @@ systemctl --user status ai-core-dev-coordinator-updater.timer --no-pager
 **Runner activation**: deliberate operator action after merge/review (`--enable`).
 
 **Updater bootstrap** (one-time, after implementation review): `--enable-updater`.
-Until then, reviewed transition merges on GitHub do not advance the local checkout
-automatically.
+The installer must restart the runner onto the reviewed unit before enabling the
+updater timer; `enable --now` alone is not sufficient when an old runner process
+may still be active. Restart failure is fail-closed (timer is not enabled).
+Until bootstrap completes, reviewed transition merges on GitHub do not advance
+the local checkout automatically.
 
 Implementation tests never start live systemd timers on the developer workstation.
 
