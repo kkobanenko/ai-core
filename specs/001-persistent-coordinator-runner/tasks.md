@@ -45,6 +45,7 @@
 
 ## Phase 6 — Verification
 
+- [x] **T025a** Commissioning repair: tolerate stale missing worktree registrations during branch-collision scan (`managed_worktrees._branch_checked_out_outside_managed`); regression in `test_stale_missing_worktree_does_not_abort_bridge_prepare`; fix `test_bridge_ff_only_failure_is_fail_closed` argv-token semantics.
 - [ ] **T025** Run focused new runner/installer tests. *(review-fix2: repaired at `4ebe7d92`; Coordinator must run pytest gate)*
 - [ ] **T026** Run the complete existing Coordinator test suite to prove claim/safety/transient/publication behavior remains green. *(review-fix2: Coordinator must run full gate)*
 - [ ] **T027** Run `git diff --check` against `8430a887ae063fbc1cf29a3fcf902083355c1a36..HEAD`. *(Coordinator must run)*
