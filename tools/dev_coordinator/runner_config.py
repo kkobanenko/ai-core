@@ -43,6 +43,14 @@ class RunnerConfig:
         return self.repositories.get(canonical_name)
 
 
+def _parse_absolute_path(raw: Any, label: str) -> Path:
+    """Развернуть ~ и отклонить относительные пути до resolve()."""
+    path = Path(str(raw)).expanduser()
+    if not path.is_absolute():
+        raise ValueError(f"{label} must be an absolute path: {path}")
+    return path.resolve()
+
+
 def _require_absolute_existing_dir(path: Path, label: str) -> None:
     """Проверить, что путь абсолютный и существует как каталог."""
     if not path.is_absolute():
@@ -85,13 +93,17 @@ def parse_runner_config(data: Mapping[str, Any]) -> RunnerConfig:
             f"got {bridge_prefix!r}"
         )
 
-    coordinator_root = Path(str(data["coordinator_repo_root"])).expanduser().resolve()
+    coordinator_root = _parse_absolute_path(
+        data["coordinator_repo_root"], "coordinator_repo_root"
+    )
     _require_absolute_existing_dir(coordinator_root, "coordinator_repo_root")
 
-    managed_root = Path(str(data["managed_worktree_root"])).expanduser().resolve()
+    managed_root = _parse_absolute_path(
+        data["managed_worktree_root"], "managed_worktree_root"
+    )
     _require_absolute_existing_dir(managed_root, "managed_worktree_root")
 
-    agent_bin = Path(str(data["agent_bin"])).expanduser().resolve()
+    agent_bin = _parse_absolute_path(data["agent_bin"], "agent_bin")
     _require_absolute_existing_file(agent_bin, "agent_bin")
 
     repos_raw = data["repositories"]
@@ -104,7 +116,9 @@ def parse_runner_config(data: Mapping[str, Any]) -> RunnerConfig:
     for repo_name, clone_path_raw in repos_raw.items():
         if not isinstance(repo_name, str) or "/" not in repo_name:
             raise ValueError(f"invalid repository key: {repo_name!r}")
-        clone_path = Path(str(clone_path_raw)).expanduser().resolve()
+        clone_path = _parse_absolute_path(
+            clone_path_raw, f"repositories[{repo_name}]"
+        )
         _require_absolute_existing_dir(clone_path, f"repositories[{repo_name}]")
         if clone_path in seen_paths:
             raise ValueError(

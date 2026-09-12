@@ -30,7 +30,11 @@ from tools.dev_coordinator.runner import (
     scan_repositories,
     validate_candidate,
 )
-from tools.dev_coordinator.runner_config import load_runner_config, parse_runner_config
+from tools.dev_coordinator.runner_config import (
+    RunnerConfig,
+    load_runner_config,
+    parse_runner_config,
+)
 
 READY_PROMPT = """---
 coord_version: 1
@@ -114,7 +118,18 @@ class TestRunnerConfig:
         with pytest.raises(ValueError, match="unknown config keys"):
             parse_runner_config(data)
 
-    def test_reject_relative_path(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("coordinator_repo_root", "relative/coord"),
+            ("managed_worktree_root", "relative/wt"),
+            ("agent_bin", "relative/agent"),
+            ("repositories", {"kkobanenko/ai-core": "relative/clone"}),
+        ],
+    )
+    def test_reject_relative_path(
+        self, tmp_path: Path, field: str, value: object
+    ) -> None:
         coord = tmp_path / "coord"
         managed = tmp_path / "wt"
         clone = tmp_path / "clone"
@@ -124,12 +139,13 @@ class TestRunnerConfig:
         agent.write_text("x", encoding="utf-8")
         data = {
             "poll_interval_seconds": 15,
-            "coordinator_repo_root": "relative/path",
+            "coordinator_repo_root": str(coord),
             "managed_worktree_root": str(managed),
             "agent_bin": str(agent),
             "bridge_prefix": "coord/bridge/",
             "repositories": {"kkobanenko/ai-core": str(clone)},
         }
+        data[field] = value
         with pytest.raises(ValueError, match="absolute path"):
             parse_runner_config(data)
 
@@ -258,7 +274,7 @@ class TestManagedWorktrees:
                 return 0, "\n".join(lines) + "\n", ""
             if cmd[:2] == ["ls-remote", "origin"]:
                 return 0, f"{sha}\trefs/heads/{branch}\n", ""
-            if cmd[:3] == ["show-ref", "--verify"]:
+            if cmd[:2] == ["show-ref", "--verify"]:
                 return 1, "", ""
             if cmd[:2] == ["worktree", "add"]:
                 wt_path.mkdir(parents=True, exist_ok=True)
@@ -272,7 +288,7 @@ class TestManagedWorktrees:
                 return 0, "true\n", ""
             if cmd[:2] == ["status", "--porcelain"]:
                 return 0, "", ""
-            if cmd[:2] == ["remote", "get-url", "origin"]:
+            if cmd[:3] == ["remote", "get-url", "origin"]:
                 return 0, "git@github.com:kkobanenko/ai-core.git\n", ""
             return 0, "", ""
 
@@ -331,11 +347,15 @@ class TestManagedWorktrees:
                 return 0, "\n".join(lines) + "\n", ""
             if cmd[:2] == ["ls-remote", "origin"]:
                 return 0, f"{state['remote_sha']}\trefs/heads/{branch}\n", ""
-            if cmd[:3] == ["show-ref", "--verify"]:
+            if cmd[:2] == ["show-ref", "--verify"]:
                 return 1, "", ""
             if cmd[:2] == ["worktree", "add"]:
-                Path(cmd[3]).mkdir(parents=True, exist_ok=True)
-                worktrees[str(Path(cmd[3]))] = {"branch": branch, "sha": remote_sha}
+                if len(cmd) >= 6 and cmd[2] == "--track":
+                    wt = Path(cmd[5])
+                else:
+                    wt = Path(cmd[2])
+                wt.mkdir(parents=True, exist_ok=True)
+                worktrees[str(wt)] = {"branch": branch, "sha": remote_sha}
                 return 0, "", ""
             if cmd[:2] == ["branch", "--show-current"]:
                 info = worktrees.get(str(cwd), {"branch": branch})
@@ -349,7 +369,7 @@ class TestManagedWorktrees:
                 if dirty and str(cwd) == str(wt_path):
                     return 0, " M dirty.txt\n", ""
                 return 0, "", ""
-            if cmd[:2] == ["remote", "get-url", "origin"]:
+            if cmd[:3] == ["remote", "get-url", "origin"]:
                 repo = "kkobanenko/evil" if wrong_repo else canonical_repo
                 return 0, f"git@github.com:{repo}.git\n", ""
             if cmd[:2] == ["merge", "--ff-only"]:
@@ -518,20 +538,16 @@ class TestRunnerDiscovery:
         clone.mkdir()
 
         def git_runner(args, cwd):
-            if args[:2] == ("for-each-ref",):
-                out = (
-                    "aaa111 refs/remotes/origin/coord/bridge/pkg-a\n"
-                    "bbb222 refs/remotes/origin/test/old-bridge\n"
+            cmd = list(args)
+            if cmd[:1] == ["for-each-ref"]:
+                # runner.py ожидает формат: SHA branch (refname:strip=3).
+                return (
+                    0,
+                    "aaa111 coord/bridge/pkg-a\n"
+                    "bbb222 test/old-bridge\n",
+                    "",
                 )
-                # Эмулируем только coord/bridge через фильтр runner.
-                lines = []
-                for line in out.splitlines():
-                    ref = line.split()[1]
-                    if "/coord/bridge/" in ref:
-                        branch = ref.replace("refs/remotes/origin/", "")
-                        lines.append(f"{line.split()[0]} {branch}")
-                return 0, "\n".join(lines) + "\n", ""
-            return 0, "", ""
+            raise AssertionError(f"unexpected git command: {cmd}")
 
         refs, err = discover_bridge_refs(clone, "coord/bridge/", git_runner)
         assert err is None
@@ -573,14 +589,14 @@ class TestRunnerDiscovery:
             cmd = list(args)
             if cmd[:2] == ["fetch", "origin"]:
                 return 0, "", ""
-            if cmd[:2] == ["for-each-ref"]:
+            if cmd[:1] == ["for-each-ref"]:
                 # Только coord/bridge в выводе for-each-ref (test/* отфильтрован git).
                 return (
                     0,
                     "sha1 coord/bridge/new-pkg\n",
                     "",
                 )
-            if cmd[:2] == ["show"]:
+            if cmd[:1] == ["show"]:
                 ref = cmd[1].split(":")[0]
                 branch = "coord/bridge/new-pkg"
                 if ref == "sha1":
@@ -595,15 +611,18 @@ class TestRunnerDiscovery:
                 return 0, "", ""
             if cmd[:2] == ["worktree", "list"]:
                 return 0, "", ""
-            if cmd[:3] == ["show-ref", "--verify"]:
+            if cmd[:2] == ["show-ref", "--verify"]:
                 return 1, "", ""
             if cmd[:2] == ["worktree", "add"]:
-                path = Path(cmd[3])
+                if len(cmd) >= 6 and cmd[2] == "--track":
+                    path = Path(cmd[5])
+                else:
+                    path = Path(cmd[2])
                 path.mkdir(parents=True, exist_ok=True)
                 return 0, "", ""
             if cmd[:2] == ["branch", "--show-current"]:
                 branch = "feat/example"
-                if "bridge" in str(cwd):
+                if "coord-bridge-new-pkg" in str(cwd):
                     branch = "coord/bridge/new-pkg"
                 return 0, branch + "\n", ""
             if cmd[:2] == ["rev-parse", "HEAD"]:
@@ -614,7 +633,7 @@ class TestRunnerDiscovery:
                 return 0, "true\n", ""
             if cmd[:2] == ["status", "--porcelain"]:
                 return 0, "", ""
-            if cmd[:2] == ["remote", "get-url", "origin"]:
+            if cmd[:3] == ["remote", "get-url", "origin"]:
                 return 0, "git@github.com:kkobanenko/ai-core.git\n", ""
             return 0, "", ""
 
@@ -735,35 +754,54 @@ class TestRunnerSerialAndErrors:
             ),
         ]
 
+        def _branch_for_cwd(cwd_str: str) -> str:
+            if "coord-bridge-a" in cwd_str:
+                return "coord/bridge/a"
+            if "coord-bridge-b" in cwd_str:
+                return "coord/bridge/b"
+            if "feat-other" in cwd_str:
+                return "feat/other"
+            return "feat/example"
+
+        def _sha_for_cwd(cwd_str: str) -> str:
+            if "coord-bridge-a" in cwd_str:
+                return "s1"
+            if "coord-bridge-b" in cwd_str:
+                return "s2"
+            return "abc123def4567890abcdef1234567890abcdef12"
+
         def git_runner(args, cwd):
             cmd = list(args)
+            cwd_str = str(cwd)
             if cmd[:2] == ["ls-remote", "origin"]:
+                branch = cmd[2].replace("refs/heads/", "")
+                if branch == "coord/bridge/a":
+                    return 0, "s1\n", ""
+                if branch == "coord/bridge/b":
+                    return 0, "s2\n", ""
                 return 0, "abc123def4567890abcdef1234567890abcdef12\n", ""
             if cmd[:2] == ["worktree", "list"]:
                 return 0, "", ""
-            if cmd[:3] == ["show-ref", "--verify"]:
+            if cmd[:2] == ["show-ref", "--verify"]:
                 return 1, "", ""
             if cmd[:2] == ["worktree", "add"]:
-                Path(cmd[3]).mkdir(parents=True, exist_ok=True)
+                if len(cmd) >= 6 and cmd[2] == "--track":
+                    wt = Path(cmd[5])
+                else:
+                    wt = Path(cmd[2])
+                wt.mkdir(parents=True, exist_ok=True)
                 return 0, "", ""
             if cmd[:2] == ["branch", "--show-current"]:
-                b = "feat/example"
-                if "feat/other" in str(cwd) or "feat-other" in str(cwd):
-                    b = "feat/other"
-                if "bridge" in str(cwd):
-                    b = "coord/bridge/a" if "pkg-a" in str(cwd) or "/a" in str(cwd) else "coord/bridge/b"
-                return 0, b + "\n", ""
+                return 0, _branch_for_cwd(cwd_str) + "\n", ""
             if cmd[:2] == ["rev-parse", "HEAD"]:
-                if "bridge" in str(cwd):
-                    return 0, ("s1\n" if "bridge/a" in str(cwd) or "-a" in str(cwd) else "s2\n"), ""
-                return 0, "abc123def4567890abcdef1234567890abcdef12\n", ""
+                return 0, _sha_for_cwd(cwd_str) + "\n", ""
             if cmd == ["rev-parse", "--is-inside-work-tree"]:
                 return 0, "true\n", ""
             if cmd[:2] == ["status", "--porcelain"]:
                 return 0, "", ""
-            if cmd[:2] == ["remote", "get-url", "origin"]:
+            if cmd[:3] == ["remote", "get-url", "origin"]:
                 return 0, "git@github.com:kkobanenko/ai-core.git\n", ""
-            return 0, "", ""
+            raise AssertionError(f"unexpected git command: {cmd} cwd={cwd_str}")
 
         for c in candidates:
             process_candidate(
@@ -788,7 +826,7 @@ class TestRunnerSerialAndErrors:
                 if calls["n"] == 1:
                     return 1, "", "network down"
                 return 0, "", ""
-            if cmd[:2] == ["for-each-ref"]:
+            if cmd[:1] == ["for-each-ref"]:
                 return 0, "", ""
             return 0, "", ""
 

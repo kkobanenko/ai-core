@@ -8,7 +8,20 @@ Date: 2026-09-12
 | --- | --- |
 | Branch | `feat/001-persistent-coordinator-runner-20260912` |
 | Base SHA | `7427a426897821e1bbeb1f07f9ae54978223aa86` |
-| Head SHA | *(Coordinator publication commit — not set by Executor)* |
+| Head SHA | *(Coordinator publication commit after review-fix2 — not set by Executor)* |
+| Review-fix2 base | `4ebe7d92c66722d20dd2f929c61f52441779e393` |
+
+## Architect review fix 2 (2026-09-12)
+
+**Gate tested at head** `4ebe7d92c66722d20dd2f929c61f52441779e393`: `6 failed, 88 passed` on runner + install + coordinator suites.
+
+**Production defect**: `parse_runner_config()` called `.resolve()` before absolute-path validation, so relative values became cwd-derived absolutes and failed as missing paths instead of `absolute path` errors.
+
+**Repair**: Added `_parse_absolute_path()` — expand `~`, reject relative paths, then resolve — for `coordinator_repo_root`, `managed_worktree_root`, `agent_bin`, and every `repositories` clone path. Parameterized relative-path rejection tests cover all path-valued fields.
+
+**Test harness defects**: Fake git runners used impossible command matchers (`cmd[:2] == ["remote", "get-url", "origin"]`, `cmd[:2] == ["for-each-ref"]`, `cmd[:3] == ["show-ref", "--verify"]`, etc.), returning empty defaults and manufacturing worktree/discovery/serial failures.
+
+**Repair**: Normalized matchers to production command shapes (`cmd[:3]` for remote get-url, `cmd[:1]` for for-each-ref/show, `cmd[:2]` for show-ref, branch-aware ls-remote, track-form worktree add path index). Retained review-fix1 ff-only / fail-closed guarantees.
 
 ## Architect review fix 1 (2026-09-12)
 
@@ -36,11 +49,8 @@ Date: 2026-09-12
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Changed-SHA bridge worktree tests | `PYTHONPATH=. pytest tests/test_dev_coordinator_runner.py::TestManagedWorktrees::test_bridge_worktree_fast_forward_on_changed_sha tests/test_dev_coordinator_runner.py::TestManagedWorktrees::test_bridge_ff_only_failure_is_fail_closed tests/test_dev_coordinator_runner.py::TestManagedWorktrees::test_dirty_bridge_worktree_not_advanced tests/test_dev_coordinator_runner.py::TestManagedWorktrees::test_bridge_repo_or_branch_mismatch_fail_closed -q` | Shell unavailable in Executor session; Coordinator must run |
-| All runner tests | `PYTHONPATH=. pytest tests/test_dev_coordinator_runner.py -q` | Shell unavailable in Executor session; Coordinator must run |
-| Installer tests | `PYTHONPATH=. pytest tests/test_dev_coordinator_runner_install.py -q` | Shell unavailable in Executor session; Coordinator must run |
-| Existing Coordinator suite | `PYTHONPATH=. pytest tests/test_dev_coordinator.py -q` | Shell unavailable in Executor session; Coordinator must run |
-| Whitespace | `git diff --check` | Shell unavailable in Executor session; Coordinator must run |
+| Full local gate (review-fix2) | `PYTHONPATH=. python3.10 -m pytest -q tests/test_dev_coordinator_runner.py tests/test_dev_coordinator_runner_install.py tests/test_dev_coordinator.py` | Shell unavailable in Executor session; Coordinator must run |
+| Whitespace | `git diff --check 8430a887ae063fbc1cf29a3fcf902083355c1a36 HEAD` | Shell unavailable in Executor session; Coordinator must run |
 
 ## Risks
 

@@ -45,9 +45,9 @@
 
 ## Phase 6 — Verification
 
-- [ ] **T025** Run focused new runner/installer tests. *(Executor: shell unavailable; Coordinator must run)*
-- [ ] **T026** Run the complete existing Coordinator test suite to prove claim/safety/transient/publication behavior remains green. *(Coordinator must run)*
-- [ ] **T027** Run `git diff --check`. *(Coordinator must run)*
+- [ ] **T025** Run focused new runner/installer tests. *(review-fix2: repaired at `4ebe7d92`; Coordinator must run pytest gate)*
+- [ ] **T026** Run the complete existing Coordinator test suite to prove claim/safety/transient/publication behavior remains green. *(review-fix2: Coordinator must run full gate)*
+- [ ] **T027** Run `git diff --check` against `8430a887ae063fbc1cf29a3fcf902083355c1a36..HEAD`. *(Coordinator must run)*
 - [x] **T028** Perform a harmless local fake/sandbox scan proving an old historical `test/*` bridge is ignored. *(covered by `test_discover_only_coord_bridge_refs` / `test_ignore_test_prefix_branches_in_scan`)*
 - [x] **T029** Produce a handoff with branch, exact base/head, changed files, tests, risks and rollback.
 
