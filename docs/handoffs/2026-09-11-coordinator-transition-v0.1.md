@@ -1,7 +1,7 @@
 # Handoff: Coordinator transition v0.1
 
-Date: 2026-09-11  
-Worktree: `/home/kok4444/projects/ai-core-coordinator-transition`  
+Date: 2026-09-11
+Worktree: `/home/kok4444/projects/ai-core-coordinator-transition`
 Primary checkout (untouched): `/home/kok4444/projects/ai-core` on `main` @ `7569441c18362cfd15524ad73f56f7f35580c86f`
 
 ## Branch / SHAs
@@ -73,7 +73,7 @@ No rebase/merge/force-push/delete/retarget/amend/normalize of foreign branches.
 - `--mode launch`: at most one Cursor launch when `EXECUTOR_READY` + safety
 - `--once`: single evaluation and exit
 
-Verified CLI launch shape: `agent --print --workspace <path> --trust <prompt>`  
+Verified CLI launch shape: `agent --print --workspace <path> --trust <prompt>`
 (`agent` version observed: `2026.08.04-aaa8809`)
 
 ## Local tests (exact)
