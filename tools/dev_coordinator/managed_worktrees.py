@@ -128,6 +128,41 @@ def _remote_branch_exists(
     return True, "ok"
 
 
+def _fast_forward_worktree(
+    worktree: Path,
+    *,
+    expected_repo: str,
+    expected_branch: str,
+    target_sha: str,
+    git_runner: GitRunner,
+) -> tuple[bool, str]:
+    """Безопасно продвинуть существующий clean worktree до target_sha (только ff-only)."""
+    snap = read_worktree_snapshot(worktree, git_runner=git_runner)
+    if snap.is_dirty:
+        return False, f"worktree is dirty: {worktree}"
+    if snap.branch != expected_branch:
+        return (
+            False,
+            f"branch mismatch at {worktree}: expected={expected_branch!r} "
+            f"actual={snap.branch!r}",
+        )
+    if snap.head_sha == target_sha:
+        return True, "already at target sha"
+
+    canonical, _ = read_origin_repo(worktree, git_runner=git_runner)
+    if canonical != expected_repo:
+        return (
+            False,
+            f"origin repo mismatch at {worktree}: expected={expected_repo} "
+            f"actual={canonical}",
+        )
+
+    code, out, err = git_runner(["merge", "--ff-only", target_sha], worktree)
+    if code != 0:
+        return False, f"fast-forward merge failed: {err or out}".strip()
+    return True, "fast-forwarded"
+
+
 def _worktree_matches(
     worktree: Path,
     *,
@@ -284,6 +319,50 @@ def prepare_bridge_worktree(
                 reason="reused existing bridge worktree",
                 created=False,
             )
+
+        snap = read_worktree_snapshot(worktree_path, git_runner=git_runner)
+        canonical, _ = read_origin_repo(worktree_path, git_runner=git_runner)
+        can_fast_forward = (
+            not snap.is_dirty
+            and snap.branch == bridge_branch
+            and canonical == canonical_repo
+            and snap.head_sha is not None
+            and snap.head_sha != bridge_sha
+        )
+        if can_fast_forward:
+            ff_ok, ff_reason = _fast_forward_worktree(
+                worktree_path,
+                expected_repo=canonical_repo,
+                expected_branch=bridge_branch,
+                target_sha=bridge_sha,
+                git_runner=git_runner,
+            )
+            if ff_ok:
+                ok, verify_reason = _worktree_matches(
+                    worktree_path,
+                    expected_repo=canonical_repo,
+                    expected_branch=bridge_branch,
+                    expected_sha=bridge_sha,
+                    git_runner=git_runner,
+                )
+                if ok:
+                    return WorktreePrepareResult(
+                        ok=True,
+                        path=worktree_path,
+                        reason="advanced existing bridge worktree via fast-forward",
+                        created=False,
+                    )
+                return WorktreePrepareResult(
+                    ok=False,
+                    path=worktree_path,
+                    reason=f"post fast-forward verification failed: {verify_reason}",
+                )
+            return WorktreePrepareResult(
+                ok=False,
+                path=worktree_path,
+                reason=ff_reason,
+            )
+
         return WorktreePrepareResult(
             ok=False,
             path=worktree_path,

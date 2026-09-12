@@ -298,6 +298,219 @@ class TestManagedWorktrees:
         assert second.ok
         assert not second.created
 
+    def _bridge_git_runner_factory(
+        self,
+        *,
+        branch: str,
+        wt_path: Path,
+        initial_sha: str,
+        remote_sha: str,
+        canonical_repo: str = "kkobanenko/ai-core",
+        dirty: bool = False,
+        wrong_branch: Optional[str] = None,
+        wrong_repo: bool = False,
+        allow_ff: bool = True,
+    ) -> tuple[Any, dict[str, Any]]:
+        """Фабрика fake git runner для bridge worktree с отслеживанием команд."""
+        worktrees: dict[str, dict[str, str]] = {
+            str(wt_path): {
+                "branch": wrong_branch or branch,
+                "sha": initial_sha,
+            }
+        }
+        state: dict[str, Any] = {"commands": [], "remote_sha": remote_sha}
+
+        def git_runner(args, cwd):
+            cmd = list(args)
+            state["commands"].append((cmd, str(cwd)))
+            if cmd[:2] == ["worktree", "list"]:
+                lines = []
+                for p, info in worktrees.items():
+                    lines.append(f"worktree {p}")
+                    lines.append(f"branch {info['branch']}")
+                return 0, "\n".join(lines) + "\n", ""
+            if cmd[:2] == ["ls-remote", "origin"]:
+                return 0, f"{state['remote_sha']}\trefs/heads/{branch}\n", ""
+            if cmd[:3] == ["show-ref", "--verify"]:
+                return 1, "", ""
+            if cmd[:2] == ["worktree", "add"]:
+                Path(cmd[3]).mkdir(parents=True, exist_ok=True)
+                worktrees[str(Path(cmd[3]))] = {"branch": branch, "sha": remote_sha}
+                return 0, "", ""
+            if cmd[:2] == ["branch", "--show-current"]:
+                info = worktrees.get(str(cwd), {"branch": branch})
+                return 0, info["branch"] + "\n", ""
+            if cmd[:2] == ["rev-parse", "HEAD"]:
+                info = worktrees.get(str(cwd), {"sha": initial_sha})
+                return 0, info["sha"] + "\n", ""
+            if cmd == ["rev-parse", "--is-inside-work-tree"]:
+                return 0, "true\n", ""
+            if cmd[:2] == ["status", "--porcelain"]:
+                if dirty and str(cwd) == str(wt_path):
+                    return 0, " M dirty.txt\n", ""
+                return 0, "", ""
+            if cmd[:2] == ["remote", "get-url", "origin"]:
+                repo = "kkobanenko/evil" if wrong_repo else canonical_repo
+                return 0, f"git@github.com:{repo}.git\n", ""
+            if cmd[:2] == ["merge", "--ff-only"]:
+                target = cmd[2]
+                key = str(cwd)
+                if not allow_ff:
+                    return 1, "", "fatal: Not possible to fast-forward"
+                if key in worktrees and target == state["remote_sha"]:
+                    worktrees[key]["sha"] = target
+                    return 0, "", ""
+                return 1, "", "fatal: Not possible to fast-forward"
+            return 0, "", ""
+
+        return git_runner, state
+
+    def test_bridge_worktree_fast_forward_on_changed_sha(self, tmp_path: Path) -> None:
+        config = _make_config(tmp_path)
+        clone = config.repositories["kkobanenko/ai-core"]
+        branch = "coord/bridge/pkg-001"
+        sha_old = "bridge_sha_old"
+        sha_new = "bridge_sha_new"
+        wt_path = derive_bridge_worktree_path(
+            config.managed_worktree_root, "kkobanenko/ai-core", branch
+        )
+        wt_path.mkdir(parents=True)
+
+        git_runner, state = self._bridge_git_runner_factory(
+            branch=branch,
+            wt_path=wt_path,
+            initial_sha=sha_old,
+            remote_sha=sha_new,
+        )
+
+        result = prepare_bridge_worktree(
+            repo_clone=clone,
+            canonical_repo="kkobanenko/ai-core",
+            bridge_branch=branch,
+            bridge_sha=sha_new,
+            managed_root=config.managed_worktree_root,
+            git_runner=git_runner,
+        )
+        assert result.ok
+        assert result.path == wt_path
+        assert not result.created
+        assert "fast-forward" in result.reason
+        merge_cmds = [c for c, _ in state["commands"] if c[:2] == ["merge", "--ff-only"]]
+        assert merge_cmds == [["merge", "--ff-only", sha_new]]
+
+    def test_bridge_ff_only_failure_is_fail_closed(self, tmp_path: Path) -> None:
+        config = _make_config(tmp_path)
+        clone = config.repositories["kkobanenko/ai-core"]
+        branch = "coord/bridge/pkg-001"
+        sha_old = "bridge_sha_old"
+        sha_new = "bridge_sha_new"
+        wt_path = derive_bridge_worktree_path(
+            config.managed_worktree_root, "kkobanenko/ai-core", branch
+        )
+        wt_path.mkdir(parents=True)
+
+        git_runner, state = self._bridge_git_runner_factory(
+            branch=branch,
+            wt_path=wt_path,
+            initial_sha=sha_old,
+            remote_sha=sha_new,
+            allow_ff=False,
+        )
+
+        result = prepare_bridge_worktree(
+            repo_clone=clone,
+            canonical_repo="kkobanenko/ai-core",
+            bridge_branch=branch,
+            bridge_sha=sha_new,
+            managed_root=config.managed_worktree_root,
+            git_runner=git_runner,
+        )
+        assert not result.ok
+        forbidden = ("reset", "clean", "checkout", "-f", "--force")
+        for cmd, _ in state["commands"]:
+            flat = " ".join(cmd)
+            for token in forbidden:
+                assert token not in flat
+
+    def test_dirty_bridge_worktree_not_advanced(self, tmp_path: Path) -> None:
+        config = _make_config(tmp_path)
+        clone = config.repositories["kkobanenko/ai-core"]
+        branch = "coord/bridge/pkg-001"
+        sha_old = "bridge_sha_old"
+        sha_new = "bridge_sha_new"
+        wt_path = derive_bridge_worktree_path(
+            config.managed_worktree_root, "kkobanenko/ai-core", branch
+        )
+        wt_path.mkdir(parents=True)
+
+        git_runner, state = self._bridge_git_runner_factory(
+            branch=branch,
+            wt_path=wt_path,
+            initial_sha=sha_old,
+            remote_sha=sha_new,
+            dirty=True,
+        )
+
+        result = prepare_bridge_worktree(
+            repo_clone=clone,
+            canonical_repo="kkobanenko/ai-core",
+            bridge_branch=branch,
+            bridge_sha=sha_new,
+            managed_root=config.managed_worktree_root,
+            git_runner=git_runner,
+        )
+        assert not result.ok
+        assert "dirty" in result.reason
+        assert not any(c[:2] == ["merge", "--ff-only"] for c, _ in state["commands"])
+
+    def test_bridge_repo_or_branch_mismatch_fail_closed(self, tmp_path: Path) -> None:
+        config = _make_config(tmp_path)
+        clone = config.repositories["kkobanenko/ai-core"]
+        branch = "coord/bridge/pkg-001"
+        sha_old = "bridge_sha_old"
+        sha_new = "bridge_sha_new"
+        wt_path = derive_bridge_worktree_path(
+            config.managed_worktree_root, "kkobanenko/ai-core", branch
+        )
+        wt_path.mkdir(parents=True)
+
+        git_runner_branch, state_branch = self._bridge_git_runner_factory(
+            branch=branch,
+            wt_path=wt_path,
+            initial_sha=sha_old,
+            remote_sha=sha_new,
+            wrong_branch="coord/bridge/other",
+        )
+        branch_result = prepare_bridge_worktree(
+            repo_clone=clone,
+            canonical_repo="kkobanenko/ai-core",
+            bridge_branch=branch,
+            bridge_sha=sha_new,
+            managed_root=config.managed_worktree_root,
+            git_runner=git_runner_branch,
+        )
+        assert not branch_result.ok
+        assert "branch mismatch" in branch_result.reason
+        assert not any(c[:2] == ["merge", "--ff-only"] for c, _ in state_branch["commands"])
+
+        git_runner_repo, state_repo = self._bridge_git_runner_factory(
+            branch=branch,
+            wt_path=wt_path,
+            initial_sha=sha_old,
+            remote_sha=sha_new,
+            wrong_repo=True,
+        )
+        repo_result = prepare_bridge_worktree(
+            repo_clone=clone,
+            canonical_repo="kkobanenko/ai-core",
+            bridge_branch=branch,
+            bridge_sha=sha_new,
+            managed_root=config.managed_worktree_root,
+            git_runner=git_runner_repo,
+        )
+        assert not repo_result.ok
+        assert not any(c[:2] == ["merge", "--ff-only"] for c, _ in state_repo["commands"])
+
 
 class TestRunnerDiscovery:
     def test_discover_only_coord_bridge_refs(self, tmp_path: Path) -> None:

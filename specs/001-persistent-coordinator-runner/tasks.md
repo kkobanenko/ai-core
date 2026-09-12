@@ -13,7 +13,7 @@
 ## Phase 2 — Managed worktree preparation
 
 - [x] **T004** Add `tools/dev_coordinator/managed_worktrees.py` with canonical containment checks under one managed root.
-- [x] **T005** Implement bridge-worktree prepare/reuse with exact repo/branch/SHA/clean checks and no force.
+- [x] **T005** Implement bridge-worktree prepare/reuse with exact repo/branch/SHA/clean checks, ff-only advance on changed SHA, and no force.
 - [x] **T006** Implement executor-worktree prepare/reuse with exact target repo/branch/base SHA/clean checks.
 - [x] **T007** Fail closed if a required branch is checked out outside the managed root, if a path is inconsistent, or target is `main`/`master`.
 - [x] **T008** Add tests for create, safe reuse, stale/mismatched worktree, outside-root path, branch collision and missing remote ref.
