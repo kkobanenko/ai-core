@@ -260,7 +260,7 @@ def classify_and_cleanup_transients(
             )
 
         status = porcelain_status_for_path(porcelain, path)
-        # Должен быть untracked: ?? 
+        # Должен быть untracked: ??
         if not status.startswith("?"):
             return TransientCleanupResult(
                 ok=False,
