@@ -51,6 +51,17 @@ _RECOVERABLE_START_REASONS = frozenset({"runner_start_failed"})
 # Фаза незавершённой транзакции: маркер ставится до systemctl stop.
 _PENDING_UPDATE_PHASE = "stop_mutation_window"
 
+# Поддерживаемая версия durable state.
+_UPDATER_STATE_VERSION = 1
+
+
+class StateLoadError(Exception):
+    """Ошибка strict-загрузки updater-state.json (fail-closed для execution)."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
 
 @dataclass(frozen=True)
 class UpdateOutcome:
@@ -74,15 +85,36 @@ def _utc_now_iso() -> str:
 
 
 def load_updater_state(path: Path) -> dict[str, Any]:
+    """Мягкая загрузка для read-only отчётов (может вернуть пустой state)."""
     if not path.is_file():
-        return {"version": 1}
+        return {"version": _UPDATER_STATE_VERSION}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return {"version": 1}
+        return {"version": _UPDATER_STATE_VERSION}
     if not isinstance(data, dict):
-        return {"version": 1}
-    data.setdefault("version", 1)
+        return {"version": _UPDATER_STATE_VERSION}
+    data.setdefault("version", _UPDATER_STATE_VERSION)
+    return data
+
+
+def load_updater_state_strict(path: Path) -> dict[str, Any]:
+    """Strict-загрузка для execution: corrupt/unsupported version -> StateLoadError."""
+    if not path.is_file():
+        return {"version": _UPDATER_STATE_VERSION}
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise StateLoadError("state_unreadable") from exc
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise StateLoadError("state_corrupt") from exc
+    if not isinstance(data, dict):
+        raise StateLoadError("state_not_object")
+    version = data.get("version", _UPDATER_STATE_VERSION)
+    if version != _UPDATER_STATE_VERSION:
+        raise StateLoadError("unsupported_state_version")
     return data
 
 
@@ -214,15 +246,32 @@ def _make_pending_update(pre_update_head: str, target_head: str) -> dict[str, st
     }
 
 
-def _get_pending_update(state: dict[str, Any]) -> Optional[dict[str, str]]:
+def _inspect_pending_update(
+    state: dict[str, Any],
+) -> tuple[str, Optional[dict[str, str]]]:
+    """Различает отсутствие маркера и present-but-invalid pending_update."""
+    if "pending_update" not in state:
+        return "absent", None
     pending = state.get("pending_update")
     if not isinstance(pending, dict):
-        return None
+        return "invalid", None
     pre = pending.get("pre_update_head")
     target = pending.get("target_head")
-    if not isinstance(pre, str) or not pre or not isinstance(target, str) or not target:
-        return None
-    return pending
+    phase = pending.get("phase")
+    if not isinstance(pre, str) or not pre:
+        return "invalid", None
+    if not isinstance(target, str) or not target:
+        return "invalid", None
+    if phase != _PENDING_UPDATE_PHASE:
+        return "invalid", None
+    return "valid", pending
+
+
+def _get_pending_update(state: dict[str, Any]) -> Optional[dict[str, str]]:
+    status, pending = _inspect_pending_update(state)
+    if status == "valid":
+        return pending
+    return None
 
 
 def _set_pending_update(
@@ -394,18 +443,22 @@ def _recover_pending_update(
     try:
         maintenance, process_lock, skip_outcome = _acquire_recovery_locks(config.state_dir.resolve())
         if skip_outcome is not None:
-            skip_outcome.local_head = local_head
-            skip_outcome.remote_head = target_head
+            outcome = UpdateOutcome(
+                result=skip_outcome.result,
+                reason=skip_outcome.reason,
+                local_head=local_head,
+                remote_head=target_head,
+            )
             _persist_attempt(
                 state_path,
                 state,
-                skip_outcome,
+                outcome,
                 preserve_pending_update=True,
                 pending_snapshot=pending_snapshot,
                 preserve_sticky_result=True,
             )
-            LOGGER.info("pending recovery skipped: %s", skip_outcome.reason)
-            return skip_outcome
+            LOGGER.info("pending recovery skipped: %s", outcome.reason)
+            return outcome
 
         ok_after_lock, lock_reason, locked_head = _check_local_authority(config, git_runner)
         if not ok_after_lock or locked_head != local_head:
@@ -522,18 +575,22 @@ def _recover_legacy_runner_start_failure(
     try:
         maintenance, process_lock, skip_outcome = _acquire_recovery_locks(config.state_dir.resolve())
         if skip_outcome is not None:
-            skip_outcome.local_head = local_head
-            skip_outcome.remote_head = remote_head
+            outcome = UpdateOutcome(
+                result=skip_outcome.result,
+                reason=skip_outcome.reason,
+                local_head=local_head,
+                remote_head=remote_head,
+            )
             _persist_attempt(
                 state_path,
                 state,
-                skip_outcome,
+                outcome,
                 preserve_pending_update=True,
                 pending_snapshot=pending_snapshot,
                 preserve_sticky_result=True,
             )
-            LOGGER.info("runner recovery skipped: %s", skip_outcome.reason)
-            return skip_outcome
+            LOGGER.info("runner recovery skipped: %s", outcome.reason)
+            return outcome
 
         ok, reason = _check_preconditions(config, git_runner)
         if ok and reason == "already_current":
@@ -607,7 +664,6 @@ def run_update_once(
     state_dir = config.state_dir.resolve()
     ensure_state_layout(state_dir)
     state_path = updater_state_path(state_dir)
-    state = load_updater_state(state_path)
     repo = config.coordinator_repo_root
 
     exclusion = UpdaterExclusionLock(state_dir)
@@ -616,7 +672,6 @@ def run_update_once(
             result="SKIPPED",
             reason="updater_busy",
         )
-        _persist_attempt(state_path, state, outcome)
         LOGGER.info("updater skipped: %s", outcome.reason)
         return outcome
 
@@ -628,8 +683,27 @@ def run_update_once(
     merge_attempted = False
 
     try:
-        # Шаг 1: durable pending_update recovery (до fetch, без сети).
-        pending = _get_pending_update(state)
+        try:
+            state = load_updater_state_strict(state_path)
+        except StateLoadError as exc:
+            outcome = UpdateOutcome(
+                result="HUMAN_REQUIRED",
+                reason=exc.reason,
+            )
+            LOGGER.error("updater state load failed: %s", exc.reason)
+            return outcome
+
+        # Шаг 1a: present-but-invalid pending_update -> fail closed.
+        pending_status, pending = _inspect_pending_update(state)
+        if pending_status == "invalid":
+            outcome = UpdateOutcome(
+                result="HUMAN_REQUIRED",
+                reason="pending_update_invalid",
+            )
+            LOGGER.error("pending_update marker invalid; human intervention required")
+            return outcome
+
+        # Шаг 1b: durable pending_update recovery (до fetch, без сети).
         if pending is not None:
             return _recover_pending_update(
                 config,
@@ -824,25 +898,46 @@ def run_update_once(
                 )
                 if start_code == 0:
                     runner_started = True
+                    outcome = UpdateOutcome(
+                        result="FAIL_CLOSED",
+                        reason="ff_refused_recoverable",
+                        local_head=new_head,
+                        remote_head=remote_head,
+                        runner_stopped=runner_stopped,
+                        runner_started=runner_started,
+                        merge_attempted=True,
+                    )
+                    restart_at = _utc_now_iso()
+                    _persist_attempt(
+                        state_path,
+                        state,
+                        outcome,
+                        last_runner_restart_at=restart_at,
+                        clear_pending_update=True,
+                    )
+                    LOGGER.warning(
+                        "ff-only refused but worktree unchanged; runner restored"
+                    )
+                    return outcome
+
                 outcome = UpdateOutcome(
-                    result="FAIL_CLOSED",
-                    reason="ff_refused_recoverable",
+                    result="HUMAN_REQUIRED",
+                    reason="ff_refused_runner_restore_failed",
                     local_head=new_head,
                     remote_head=remote_head,
                     runner_stopped=runner_stopped,
-                    runner_started=runner_started,
+                    runner_started=False,
                     merge_attempted=True,
                 )
-                restart_at = _utc_now_iso() if runner_started else None
                 _persist_attempt(
                     state_path,
                     state,
                     outcome,
-                    last_runner_restart_at=restart_at,
-                    clear_pending_update=True,
+                    preserve_pending_update=True,
                 )
-                LOGGER.warning(
-                    "ff-only refused but worktree unchanged; runner restore attempted"
+                LOGGER.error(
+                    "ff-only refused, worktree unchanged, runner restore failed: %s",
+                    start_err or start_out,
                 )
                 return outcome
 
@@ -957,8 +1052,13 @@ def build_status_report(
 ) -> dict[str, Any]:
     """Read-only статус updater."""
     path = state_path or updater_state_path(config.state_dir)
-    state = load_updater_state(path)
-    return {
+    state_load_error: Optional[str] = None
+    try:
+        state = load_updater_state_strict(path)
+    except StateLoadError as exc:
+        state_load_error = exc.reason
+        state = load_updater_state(path)
+    report: dict[str, Any] = {
         "config_path": str(default_config_path()),
         "state_path": str(path),
         "coordinator_repo_root": str(config.coordinator_repo_root),
@@ -974,6 +1074,9 @@ def build_status_report(
         "last_runner_restart_at": state.get("last_runner_restart_at"),
         "pending_update": state.get("pending_update"),
     }
+    if state_load_error is not None:
+        report["state_load_error"] = state_load_error
+    return report
 
 
 def build_parser() -> argparse.ArgumentParser:

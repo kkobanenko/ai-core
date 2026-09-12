@@ -8,9 +8,10 @@ Date: 2026-09-12
 | --- | --- |
 | Branch | `feat/002-persistent-coordinator-self-update-20260912` |
 | Base SHA | `d2e13bfe93f11ded0cebb5bd1285cc92d00435ad` |
-| Head SHA | *(pending Coordinator publication commit after review-fix 2)* |
+| Head SHA | *(pending Coordinator publication commit after review-fix 3)* |
 | Review-fix 1 base | `59973911dd4e6186f66aabbf65909cf9a6c95858` |
 | Review-fix 2 base | `319524d62ffd769d9056986a61a3cfd4e02f8aed` |
+| Review-fix 3 base | `8317cb4aabab354d4f9ff3beeb8140658aeea5e8` |
 
 ## Summary
 
@@ -43,18 +44,26 @@ Implemented fail-closed Coordinator tooling self-update per `specs/002-persisten
 - Legacy `runner_start_failed` path retained for states without `pending_update`; new failures after merge set `pending_update` automatically.
 - Added `TestUpdaterPendingRecovery` and extended authority/recovery regression tests (12 architect cases).
 
+### Architect review-fix 3 (recovery/concurrency races)
+
+- **Immutable outcomes on lock skip**: pending/legacy recovery lock-contention paths construct new `UpdateOutcome` instead of mutating frozen instances.
+- **Exclusion lock ordering**: `UpdaterExclusionLock` acquired before `load_updater_state_strict`; `updater_busy` returns without reading or writing `updater-state.json`.
+- **ff-only refusal + runner restore failure**: unchanged/clean worktree + failed `systemctl start` → `HUMAN_REQUIRED / ff_refused_runner_restore_failed`, `pending_update` preserved; next tick performs bounded start-only recovery via pending marker (no merge).
+- **Strict durable state**: `load_updater_state_strict` fails closed on corrupt JSON or unsupported version; present-but-invalid `pending_update` → `HUMAN_REQUIRED / pending_update_invalid` with no fetch/systemctl/git mutation and no state overwrite; `--status` exposes `state_load_error` when strict load fails.
+- Added `TestUpdaterReviewFix3` and `test_exclusion_busy_does_not_alter_state` regression tests.
+
 ## Changed files
 
 | Path | Change |
 | --- | --- |
 | `tools/dev_coordinator/updater_config.py` | new |
-| `tools/dev_coordinator/updater.py` | new; review-fix 1 + review-fix 2 |
+| `tools/dev_coordinator/updater.py` | new; review-fix 1 + 2 + 3 |
 | `tools/dev_coordinator/locks.py` | extended |
 | `tools/dev_coordinator/runner.py` | maintenance gate wrapper |
 | `scripts/install_dev_coordinator_runner.py` | updater install + flags |
 | `ops/systemd/ai-core-dev-coordinator-updater.service.in` | new |
 | `ops/systemd/ai-core-dev-coordinator-updater.timer.in` | new |
-| `tests/test_dev_coordinator_updater.py` | new; review-fix 1 + review-fix 2 tests |
+| `tests/test_dev_coordinator_updater.py` | new; review-fix 1 + 2 + 3 tests |
 | `tests/test_dev_coordinator_updater_install.py` | new |
 | `docs/coordination/PERSISTENT_RUNNER.md` | self-update + pending recovery |
 | `specs/002-persistent-coordinator-self-update/tasks.md` | T033b bookkeeping |
@@ -88,7 +97,20 @@ PYTHONPATH=. python3.10 -m pytest -q \
 git diff --check 319524d62ffd769d9056986a61a3cfd4e02f8aed HEAD
 ```
 
-**Executor session (review-fix 2):** shell commands unavailable/rejected; tests authored but not executed. Coordinator must verify before merge.
+**Review-fix 3 gate (Coordinator / operator should run locally):**
+
+```bash
+PYTHONPATH=. python3.10 -m pytest -q \
+  tests/test_dev_coordinator_updater.py \
+  tests/test_dev_coordinator_updater_install.py \
+  tests/test_dev_coordinator_runner.py \
+  tests/test_dev_coordinator_runner_install.py \
+  tests/test_dev_coordinator.py
+
+git diff --check 8317cb4aabab354d4f9ff3beeb8140658aeea5e8 HEAD
+```
+
+**Executor session (review-fix 3):** shell commands unavailable/rejected; tests authored but not executed. Coordinator must verify before merge.
 
 ## Risks
 
@@ -101,6 +123,9 @@ git diff --check 319524d62ffd769d9056986a61a3cfd4e02f8aed HEAD
 | Manual one-shot races updater before process lock | Updater holds process lock in critical section |
 | Runner starts under updater maintenance exclusive | Runner skips scans until exclusive released |
 | Legacy states without `pending_update` | Legacy `runner_start_failed` recovery path retained |
+| `updater_busy` overwrites lock-owner state (review-fix 3) | Exclusion acquired before state load; busy path is read/write-free |
+| Corrupt `updater-state.json` silently reset (review-fix 3) | Strict load fails closed; status exposes `state_load_error` |
+| ff refusal + failed runner restore loses marker (review-fix 3) | `pending_update` preserved; next tick start-only recovery |
 
 ## Rollback
 

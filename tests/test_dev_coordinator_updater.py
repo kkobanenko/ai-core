@@ -1092,3 +1092,168 @@ class TestUpdaterLocks:
         assert outcome.result == "SKIPPED"
         assert outcome.reason == "updater_busy"
         lock.release()
+
+    def test_exclusion_busy_does_not_alter_state(self, tmp_path: Path) -> None:
+        """updater_busy must not read stale state nor overwrite lock-owner writes."""
+        paths = _layout(tmp_path)
+        state_path = updater_state_path(paths["state"])
+        owner_marker = {
+            "version": 1,
+            "pending_update": {
+                "pre_update_head": "owner_pre",
+                "target_head": "owner_target",
+                "phase": "stop_mutation_window",
+                "entered_at": "2026-09-12T12:00:00+00:00",
+            },
+            "last_result": "SKIPPED",
+            "reason": "maintenance_held",
+        }
+        save_updater_state(state_path, owner_marker)
+        before_bytes = state_path.read_bytes()
+
+        lock = UpdaterExclusionLock(paths["state"])
+        assert lock.acquire()
+        config = _updater_config(paths)
+        fake = FakeGitRepo(head="owner_pre", remote_head="owner_target")
+
+        outcome = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=lambda a: (0, "", ""),
+        )
+        assert outcome.result == "SKIPPED"
+        assert outcome.reason == "updater_busy"
+        assert state_path.read_bytes() == before_bytes
+        assert load_updater_state(state_path)["pending_update"] == owner_marker["pending_update"]
+        assert not any(c == ["fetch", "origin"] for c in fake.commands)
+        lock.release()
+
+
+class TestUpdaterReviewFix3:
+    """Architect review-fix 3: recovery races, exclusion ordering, corrupt state."""
+
+    def test_ff_refused_runner_restore_failed_then_start_only_recovery(
+        self, tmp_path: Path
+    ) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        fake = FakeGitRepo(head="old", remote_head="new", allow_ff=False)
+        start_calls = 0
+
+        def systemctl(args):
+            nonlocal start_calls
+            if list(args)[:1] == ["start"]:
+                start_calls += 1
+                return 1, "", "start failed"
+            return 0, "", ""
+
+        first = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert first.result == "HUMAN_REQUIRED"
+        assert first.reason == "ff_refused_runner_restore_failed"
+        state_path = updater_state_path(paths["state"])
+        state_after_first = load_updater_state(state_path)
+        assert state_after_first.get("pending_update") is not None
+        merge_count = fake.commands.count(
+            ["merge", "--ff-only", f"origin/{fake.branch}"]
+        )
+
+        second = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=lambda a: (0, "", "") if list(a)[:1] == ["start"] else (0, "", ""),
+        )
+        assert second.result == "FAIL_CLOSED"
+        assert second.reason == "pending_pre_merge_recovered"
+        assert second.runner_started is True
+        assert second.merge_attempted is False
+        assert fake.commands.count(
+            ["merge", "--ff-only", f"origin/{fake.branch}"]
+        ) == merge_count
+        assert start_calls == 2
+
+    @pytest.mark.parametrize(
+        "pending_update",
+        [
+            {"target_head": "t", "phase": "stop_mutation_window"},
+            {
+                "pre_update_head": "p",
+                "target_head": 42,
+                "phase": "stop_mutation_window",
+            },
+            {
+                "pre_update_head": "p",
+                "target_head": "t",
+                "phase": "unknown_phase",
+            },
+        ],
+    )
+    def test_malformed_pending_marker_fail_closed(
+        self, tmp_path: Path, pending_update: dict[str, object]
+    ) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        state_path = updater_state_path(paths["state"])
+        save_updater_state(
+            state_path,
+            {"version": 1, "pending_update": pending_update},
+        )
+        before_bytes = state_path.read_bytes()
+        fake = FakeGitRepo(head="old", remote_head="new")
+        calls: list[list[str]] = []
+
+        def systemctl(args):
+            calls.append(list(args))
+            return 0, "", ""
+
+        outcome = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert outcome.result == "HUMAN_REQUIRED"
+        assert outcome.reason == "pending_update_invalid"
+        assert calls == []
+        assert not any(c == ["fetch", "origin"] for c in fake.commands)
+        assert state_path.read_bytes() == before_bytes
+
+    def test_corrupt_json_state_fail_closed(self, tmp_path: Path) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        state_path = updater_state_path(paths["state"])
+        state_path.write_text("{not valid json", encoding="utf-8")
+        before_bytes = state_path.read_bytes()
+        fake = FakeGitRepo(head="old", remote_head="new")
+        calls: list[list[str]] = []
+
+        outcome = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=lambda a: (calls.append(list(a)) or (0, "", "")),
+        )
+        assert outcome.result == "HUMAN_REQUIRED"
+        assert outcome.reason == "state_corrupt"
+        assert calls == []
+        assert not any(c == ["fetch", "origin"] for c in fake.commands)
+        assert state_path.read_bytes() == before_bytes
+
+    def test_unsupported_state_version_fail_closed(self, tmp_path: Path) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        state_path = updater_state_path(paths["state"])
+        save_updater_state(state_path, {"version": 99})
+        before_bytes = state_path.read_bytes()
+        fake = FakeGitRepo(head="old", remote_head="new")
+
+        outcome = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=lambda a: (0, "", ""),
+        )
+        assert outcome.result == "HUMAN_REQUIRED"
+        assert outcome.reason == "unsupported_state_version"
+        assert not any(c == ["fetch", "origin"] for c in fake.commands)
+        assert state_path.read_bytes() == before_bytes

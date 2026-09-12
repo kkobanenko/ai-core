@@ -48,7 +48,9 @@ Architect / Spec Kit
 - **Durable `pending_update` marker**: persisted in `updater-state.json` **before** `systemctl stop`, recording pre-update head, target remote head, and transaction phase. Survives until explicitly resolved; crash recovery does not rely on `last_result` alone.
 - **Crash recovery** (next timer tick, normal lock order): if HEAD equals recorded target → one bounded `systemctl start`, no merge; if HEAD equals pre-update head → one bounded start to restore service, no merge (fresh update deferred); uncertain/dirty/wrong authority → `HUMAN_REQUIRED`, marker preserved. Transient `SKIPPED` (maintenance/process lock) does not clear the marker.
 - **Maintenance gate** (`coordinator-maintenance.lock`): runner holds **shared** during each scan; updater holds **exclusive** during update window.
-- **Updater exclusion** (`coordinator-updater.lock`): one updater instance at a time.
+- **Updater exclusion** (`coordinator-updater.lock`): one updater instance at a time; acquired before reading/writing `updater-state.json`. `updater_busy` is a no-op on durable state (no stale read, no overwrite).
+- **Strict durable state**: corrupt JSON or unsupported `version` in `updater-state.json` fails closed (`HUMAN_REQUIRED`); present-but-invalid `pending_update` likewise. `--status` may report `state_load_error` without erasing evidence.
+- **ff-only refusal + runner restore failure**: unchanged/clean worktree but `systemctl start` fails → `HUMAN_REQUIRED / ff_refused_runner_restore_failed`, `pending_update` preserved; next tick performs start-only recovery (no merge).
 - **Coordinator process lock** (`coordinator.lock`): updater holds during stop+merge+start; manual one-shot Coordinator fails safely if lock held.
 - Lock ordering: runner = maintenance(shared) → process lock (in `run_once`); updater = exclusion → maintenance(exclusive) → process lock.
 - Forbidden recovery: reset, clean, checkout branch switch, rebase, stash, pull, force fetch/merge.

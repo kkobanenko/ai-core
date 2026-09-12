@@ -82,6 +82,7 @@
 
 - [x] **T033a** Architect review-fix 1: sticky post-stop recovery — `local==remote` must not downgrade unresolved `HUMAN_REQUIRED` to `NOOP`; bounded `runner_start_failed` recovery under locks; regression tests for consecutive attempts.
 - [x] **T033b** Architect review-fix 2: pre-fetch authority gate (no fetch on wrong origin/branch/dirty); durable `pending_update` marker before stop; crash-boundary recovery by HEAD comparison; sticky recovery survives transient `SKIPPED`; regression tests for all 12 cases.
+- [x] **T033c** Architect review-fix 3: immutable `UpdateOutcome` on lock-contention skip; exclusion lock before state load/`updater_busy` no-write; ff-only refusal + runner restore failure preserves `pending_update` with start-only recovery; strict state load + invalid `pending_update` fail closed; regression tests for all 9 cases.
 - [ ] **T034** Architect exact-head review before implementation merge.
 - [ ] **T035** Merge only after required local tests are green; hosted CI not used as iteration mechanism.
 - [ ] **T036** Operator runs one explicit install command with `--enable-updater` after reviewed code is available locally (bootstrap boundary).
