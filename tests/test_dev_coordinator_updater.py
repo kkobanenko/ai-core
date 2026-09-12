@@ -317,11 +317,14 @@ class TestUpdaterOrchestration:
     def test_fetch_failure_no_mutation(self, tmp_path: Path) -> None:
         paths = _layout(tmp_path)
         config = _updater_config(paths)
+        fake = FakeGitRepo(head="old", remote_head="new")
 
         def git_runner(args, cwd):
-            if list(args) == ["fetch", "origin"]:
+            cmd = list(args)
+            if cmd == ["fetch", "origin"]:
+                fake.commands.append(cmd)
                 return 1, "", "network down"
-            raise AssertionError(f"unexpected: {args}")
+            return fake.runner(args, cwd)
 
         calls, systemctl = self._systemctl_recorder()
         outcome = run_update_once(
@@ -332,6 +335,10 @@ class TestUpdaterOrchestration:
         assert outcome.result == "FAIL_CLOSED"
         assert outcome.reason == "fetch_error"
         assert calls == []
+        assert ["fetch", "origin"] in fake.commands
+        assert not any(c[:2] == ["merge", "--ff-only"] for c in fake.commands)
+        forbidden = {"reset", "clean", "checkout", "rebase", "stash", "pull"}
+        assert not any(cmd[0] in forbidden for cmd in fake.commands)
 
     def test_systemctl_stop_failure_no_merge(self, tmp_path: Path) -> None:
         paths = _layout(tmp_path)
@@ -1144,7 +1151,9 @@ class TestUpdaterReviewFix3:
             nonlocal start_calls
             if list(args)[:1] == ["start"]:
                 start_calls += 1
-                return 1, "", "start failed"
+                if start_calls == 1:
+                    return 1, "", "start failed"
+                return 0, "", ""
             return 0, "", ""
 
         first = run_update_once(
@@ -1164,7 +1173,7 @@ class TestUpdaterReviewFix3:
         second = run_update_once(
             config,
             git_runner=fake.runner,
-            systemctl_runner=lambda a: (0, "", "") if list(a)[:1] == ["start"] else (0, "", ""),
+            systemctl_runner=systemctl,
         )
         assert second.result == "FAIL_CLOSED"
         assert second.reason == "pending_pre_merge_recovered"
