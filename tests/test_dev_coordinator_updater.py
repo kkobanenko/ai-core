@@ -239,6 +239,7 @@ class TestUpdaterOrchestration:
         assert outcome.result == "FAIL_CLOSED"
         assert outcome.reason == "dirty_worktree"
         assert calls == []
+        assert not any(c == ["fetch", "origin"] for c in fake.commands)
 
     def test_diverged_refuses_without_stop(self, tmp_path: Path) -> None:
         paths = _layout(tmp_path)
@@ -273,6 +274,7 @@ class TestUpdaterOrchestration:
         assert outcome.result == "FAIL_CLOSED"
         assert outcome.reason == "wrong_branch"
         assert calls == []
+        assert not any(c == ["fetch", "origin"] for c in fake.commands)
 
     def test_wrong_origin_refuses(self, tmp_path: Path) -> None:
         paths = _layout(tmp_path)
@@ -292,6 +294,25 @@ class TestUpdaterOrchestration:
         assert outcome.result == "FAIL_CLOSED"
         assert outcome.reason == "wrong_origin"
         assert calls == []
+        assert not any(c == ["fetch", "origin"] for c in fake.commands)
+
+    def test_healthy_authority_already_current_fetches_then_noop(
+        self, tmp_path: Path
+    ) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        fake = FakeGitRepo(head="same", remote_head="same")
+        calls, systemctl = self._systemctl_recorder()
+
+        outcome = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert outcome.result == "NOOP"
+        assert outcome.reason == "already_current"
+        assert calls == []
+        assert ["fetch", "origin"] in fake.commands
 
     def test_fetch_failure_no_mutation(self, tmp_path: Path) -> None:
         paths = _layout(tmp_path)
@@ -440,7 +461,7 @@ class TestUpdaterStickyRecovery:
             systemctl_runner=systemctl,
         )
         assert second.result == "SUCCESS"
-        assert second.reason == "runner_start_recovered"
+        assert second.reason in ("runner_start_recovered", "pending_merge_recovered")
         assert second.runner_started is True
         assert second.merge_attempted is False
         assert fake.commands.count(
@@ -450,7 +471,8 @@ class TestUpdaterStickyRecovery:
 
         state = load_updater_state(updater_state_path(paths["state"]))
         assert state["last_result"] == "SUCCESS"
-        assert state["reason"] == "runner_start_recovered"
+        assert state["reason"] in ("runner_start_recovered", "pending_merge_recovered")
+        assert state.get("pending_update") is None
 
     def test_runner_start_failed_stays_sticky_when_recovery_fails(
         self, tmp_path: Path
@@ -538,6 +560,379 @@ class TestUpdaterStickyRecovery:
         state = load_updater_state(state_path)
         assert state["last_result"] == "HUMAN_REQUIRED"
         assert state["reason"] == sticky_reason
+
+    def test_legacy_start_failed_skipped_on_maintenance_then_recovers(
+        self, tmp_path: Path
+    ) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        fake = FakeGitRepo(head="merged", remote_head="merged")
+        state_path = updater_state_path(paths["state"])
+        save_updater_state(
+            state_path,
+            {
+                "version": 1,
+                "local_head": "merged",
+                "remote_head": "merged",
+                "last_result": "HUMAN_REQUIRED",
+                "reason": "runner_start_failed",
+            },
+        )
+
+        shared = MaintenanceGateLock(paths["state"], mode="shared")
+        assert shared.acquire()
+        calls: list[list[str]] = []
+
+        def systemctl(args):
+            calls.append(list(args))
+            return 0, "", ""
+
+        first = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert first.result == "SKIPPED"
+        assert first.reason == "maintenance_held"
+        assert calls == []
+
+        shared.release()
+        second = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert second.result == "SUCCESS"
+        assert second.reason == "runner_start_recovered"
+        assert calls == [["start", "ai-core-dev-coordinator-runner.service"]]
+
+    def test_legacy_start_failed_skipped_on_process_lock_then_recovers(
+        self, tmp_path: Path
+    ) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        fake = FakeGitRepo(head="merged", remote_head="merged")
+        state_path = updater_state_path(paths["state"])
+        save_updater_state(
+            state_path,
+            {
+                "version": 1,
+                "local_head": "merged",
+                "remote_head": "merged",
+                "last_result": "HUMAN_REQUIRED",
+                "reason": "runner_start_failed",
+            },
+        )
+
+        held = ProcessLock(paths["state"])
+        assert held.acquire()
+
+        def systemctl(args):
+            if list(args)[:1] == ["start"]:
+                return 0, "", ""
+            return 0, "", ""
+
+        first = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert first.result == "SKIPPED"
+        assert first.reason == "process_lock_held"
+
+        held.release()
+        second = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert second.result == "SUCCESS"
+        assert second.reason == "runner_start_recovered"
+
+
+class TestUpdaterPendingRecovery:
+    """Durable pending_update marker and crash-boundary recovery."""
+
+    def _pending_state(
+        self,
+        paths: dict[str, Path],
+        *,
+        pre_head: str,
+        target_head: str,
+        last_result: str = "SKIPPED",
+        reason: str = "maintenance_held",
+    ) -> Path:
+        state_path = updater_state_path(paths["state"])
+        save_updater_state(
+            state_path,
+            {
+                "version": 1,
+                "pending_update": {
+                    "pre_update_head": pre_head,
+                    "target_head": target_head,
+                    "phase": "stop_mutation_window",
+                    "entered_at": "2026-09-12T00:00:00+00:00",
+                },
+                "last_result": last_result,
+                "reason": reason,
+            },
+        )
+        return state_path
+
+    def test_pending_merge_completed_recovers_with_one_start(
+        self, tmp_path: Path
+    ) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        fake = FakeGitRepo(head="target_head", remote_head="target_head")
+        state_path = self._pending_state(
+            paths, pre_head="old_head", target_head="target_head"
+        )
+        calls, systemctl = TestUpdaterOrchestration()._systemctl_recorder()
+
+        outcome = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert outcome.result == "SUCCESS"
+        assert outcome.reason == "pending_merge_recovered"
+        assert outcome.runner_started is True
+        assert outcome.merge_attempted is False
+        assert calls == [["start", "ai-core-dev-coordinator-runner.service"]]
+        assert not any(c == ["fetch", "origin"] for c in fake.commands)
+        assert not any(c[:2] == ["merge", "--ff-only"] for c in fake.commands)
+
+        state = load_updater_state(state_path)
+        assert "pending_update" not in state
+        assert state["last_result"] == "SUCCESS"
+        assert state["reason"] == "pending_merge_recovered"
+
+    def test_pending_merge_completed_start_failure_stays_sticky(
+        self, tmp_path: Path
+    ) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        fake = FakeGitRepo(head="target_head", remote_head="target_head")
+        state_path = self._pending_state(
+            paths, pre_head="old_head", target_head="target_head"
+        )
+
+        def systemctl(args):
+            if list(args)[:1] == ["start"]:
+                return 1, "", "start failed"
+            return 0, "", ""
+
+        first = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert first.result == "HUMAN_REQUIRED"
+        assert first.reason == "runner_start_failed"
+        state = load_updater_state(state_path)
+        assert state.get("pending_update") is not None
+
+        merge_count = fake.commands.count(
+            ["merge", "--ff-only", f"origin/{fake.branch}"]
+        )
+        second = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert second.result == "HUMAN_REQUIRED"
+        assert second.reason == "runner_start_failed"
+        assert fake.commands.count(
+            ["merge", "--ff-only", f"origin/{fake.branch}"]
+        ) == merge_count
+        assert load_updater_state(state_path).get("pending_update") is not None
+
+    def test_pending_pre_merge_recovers_runner_only(self, tmp_path: Path) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        fake = FakeGitRepo(head="old_head", remote_head="target_head")
+        state_path = self._pending_state(
+            paths, pre_head="old_head", target_head="target_head"
+        )
+        calls, systemctl = TestUpdaterOrchestration()._systemctl_recorder()
+
+        outcome = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert outcome.result == "FAIL_CLOSED"
+        assert outcome.reason == "pending_pre_merge_recovered"
+        assert outcome.runner_started is True
+        assert outcome.merge_attempted is False
+        assert calls == [["start", "ai-core-dev-coordinator-runner.service"]]
+        assert not any(c[:2] == ["merge", "--ff-only"] for c in fake.commands)
+
+        state = load_updater_state(state_path)
+        assert "pending_update" not in state
+
+        # Следующий вызов может начать обычный update (не NOOP).
+        second = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert second.result == "SUCCESS"
+        assert fake.head == "target_head"
+
+    def test_pending_unexpected_head_human_required(self, tmp_path: Path) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        fake = FakeGitRepo(head="mystery_head", remote_head="target_head")
+        state_path = self._pending_state(
+            paths, pre_head="old_head", target_head="target_head"
+        )
+        calls, systemctl = TestUpdaterOrchestration()._systemctl_recorder()
+
+        outcome = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert outcome.result == "HUMAN_REQUIRED"
+        assert outcome.reason == "pending_unexpected_head"
+        assert calls == []
+        assert not any(c[:2] == ["merge", "--ff-only"] for c in fake.commands)
+
+        state = load_updater_state(state_path)
+        assert state.get("pending_update") is not None
+
+    def test_pending_dirty_worktree_human_required(self, tmp_path: Path) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        fake = FakeGitRepo(
+            head="target_head", remote_head="target_head", dirty=True
+        )
+        state_path = self._pending_state(
+            paths, pre_head="old_head", target_head="target_head"
+        )
+        calls, systemctl = TestUpdaterOrchestration()._systemctl_recorder()
+
+        outcome = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert outcome.result == "HUMAN_REQUIRED"
+        assert outcome.reason == "dirty_worktree"
+        assert calls == []
+
+        state = load_updater_state(state_path)
+        assert state.get("pending_update") is not None
+
+    def test_pending_recovery_skipped_on_maintenance_then_recovers(
+        self, tmp_path: Path
+    ) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        fake = FakeGitRepo(head="target_head", remote_head="target_head")
+        state_path = self._pending_state(
+            paths, pre_head="old_head", target_head="target_head"
+        )
+
+        shared = MaintenanceGateLock(paths["state"], mode="shared")
+        assert shared.acquire()
+        calls: list[list[str]] = []
+
+        def systemctl(args):
+            calls.append(list(args))
+            return 0, "", ""
+
+        first = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert first.result == "SKIPPED"
+        assert first.reason == "maintenance_held"
+        assert calls == []
+        state = load_updater_state(state_path)
+        assert state.get("pending_update") is not None
+
+        shared.release()
+        second = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert second.result == "SUCCESS"
+        assert second.reason == "pending_merge_recovered"
+        assert calls == [["start", "ai-core-dev-coordinator-runner.service"]]
+
+    def test_pending_recovery_skipped_on_process_lock_then_recovers(
+        self, tmp_path: Path
+    ) -> None:
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        fake = FakeGitRepo(head="target_head", remote_head="target_head")
+        state_path = self._pending_state(
+            paths, pre_head="old_head", target_head="target_head"
+        )
+
+        held = ProcessLock(paths["state"])
+        assert held.acquire()
+        calls: list[list[str]] = []
+
+        def systemctl(args):
+            calls.append(list(args))
+            return 0, "", ""
+
+        first = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert first.result == "SKIPPED"
+        assert first.reason == "process_lock_held"
+        assert calls == []
+        assert load_updater_state(state_path).get("pending_update") is not None
+
+        held.release()
+        second = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert second.result == "SUCCESS"
+        assert second.reason == "pending_merge_recovered"
+
+    def test_crash_boundary_marker_without_last_result(
+        self, tmp_path: Path
+    ) -> None:
+        """Recovery по pending_update без опоры на last_result."""
+        paths = _layout(tmp_path)
+        config = _updater_config(paths)
+        fake = FakeGitRepo(head="target_head", remote_head="target_head")
+        state_path = updater_state_path(paths["state"])
+        save_updater_state(
+            state_path,
+            {
+                "version": 1,
+                "pending_update": {
+                    "pre_update_head": "old_head",
+                    "target_head": "target_head",
+                    "phase": "stop_mutation_window",
+                    "entered_at": "2026-09-12T00:00:00+00:00",
+                },
+            },
+        )
+        calls, systemctl = TestUpdaterOrchestration()._systemctl_recorder()
+
+        outcome = run_update_once(
+            config,
+            git_runner=fake.runner,
+            systemctl_runner=systemctl,
+        )
+        assert outcome.result == "SUCCESS"
+        assert outcome.reason == "pending_merge_recovered"
+        assert calls == [["start", "ai-core-dev-coordinator-runner.service"]]
+        assert load_updater_state(state_path).get("pending_update") is None
 
 
 class TestUpdaterLocks:

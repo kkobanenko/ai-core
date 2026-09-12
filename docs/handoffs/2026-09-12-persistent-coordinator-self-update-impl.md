@@ -8,8 +8,9 @@ Date: 2026-09-12
 | --- | --- |
 | Branch | `feat/002-persistent-coordinator-self-update-20260912` |
 | Base SHA | `d2e13bfe93f11ded0cebb5bd1285cc92d00435ad` |
-| Head SHA | *(pending Coordinator publication commit after review-fix 1)* |
-| Review-fix base | `59973911dd4e6186f66aabbf65909cf9a6c95858` |
+| Head SHA | *(pending Coordinator publication commit after review-fix 2)* |
+| Review-fix 1 base | `59973911dd4e6186f66aabbf65909cf9a6c95858` |
+| Review-fix 2 base | `319524d62ffd769d9056986a61a3cfd4e02f8aed` |
 
 ## Summary
 
@@ -30,21 +31,33 @@ Implemented fail-closed Coordinator tooling self-update per `specs/002-persisten
 - Uncertain post-stop reasons (`ff_refused`, `post_merge_dirty`, `post_merge_verification_failed`) remain sticky fail-closed when heads match.
 - Added `TestUpdaterStickyRecovery` consecutive-attempt regression tests.
 
+### Architect review-fix 2 (authority ordering + durable update recovery)
+
+- **Pre-fetch authority gate**: `_check_local_authority` runs before `git fetch origin`. Wrong origin/branch/dirty/not-a-worktree/head-unavailable → `FAIL_CLOSED` with no fetch, no systemctl, no git mutation.
+- **Durable `pending_update` marker**: written to `updater-state.json` before `systemctl stop` with `pre_update_head`, `target_head`, `phase`, `entered_at`. Cleared only on proven resolution.
+- **Crash recovery** (first step after exclusion lock, before fetch):
+  - HEAD == `target_head` + clean authority → one bounded start, no merge; success → `SUCCESS / pending_merge_recovered`, marker cleared.
+  - HEAD == `pre_update_head` + clean authority → one bounded start, no merge; success → `FAIL_CLOSED / pending_pre_merge_recovered`, marker cleared (fresh update deferred).
+  - Unexpected/dirty/authority failure → `HUMAN_REQUIRED`, marker preserved.
+- **Sticky SKIPPED preservation**: transient `maintenance_held` / `process_lock_held` during recovery returns `SKIPPED` to caller but preserves `pending_update` and sticky `last_result`/`reason` in durable state.
+- Legacy `runner_start_failed` path retained for states without `pending_update`; new failures after merge set `pending_update` automatically.
+- Added `TestUpdaterPendingRecovery` and extended authority/recovery regression tests (12 architect cases).
+
 ## Changed files
 
 | Path | Change |
 | --- | --- |
 | `tools/dev_coordinator/updater_config.py` | new |
-| `tools/dev_coordinator/updater.py` | new; review-fix 1 sticky recovery |
+| `tools/dev_coordinator/updater.py` | new; review-fix 1 + review-fix 2 |
 | `tools/dev_coordinator/locks.py` | extended |
 | `tools/dev_coordinator/runner.py` | maintenance gate wrapper |
 | `scripts/install_dev_coordinator_runner.py` | updater install + flags |
 | `ops/systemd/ai-core-dev-coordinator-updater.service.in` | new |
 | `ops/systemd/ai-core-dev-coordinator-updater.timer.in` | new |
-| `tests/test_dev_coordinator_updater.py` | new; review-fix 1 sticky recovery tests |
+| `tests/test_dev_coordinator_updater.py` | new; review-fix 1 + review-fix 2 tests |
 | `tests/test_dev_coordinator_updater_install.py` | new |
-| `docs/coordination/PERSISTENT_RUNNER.md` | self-update section |
-| `specs/002-persistent-coordinator-self-update/tasks.md` | implementation status |
+| `docs/coordination/PERSISTENT_RUNNER.md` | self-update + pending recovery |
+| `specs/002-persistent-coordinator-self-update/tasks.md` | T033b bookkeeping |
 | `docs/handoffs/2026-09-12-persistent-coordinator-self-update-impl.md` | this file |
 
 ## Tests
@@ -62,9 +75,7 @@ PYTHONPATH=. python3.10 -m pytest -q \
 git diff --check d2e13bfe93f11ded0cebb5bd1285cc92d00435ad HEAD
 ```
 
-**Executor session (review-fix 1):** shell commands unavailable/rejected; tests authored but not executed. Coordinator must verify before merge.
-
-**Review-fix 1 gate (Coordinator / operator should run locally):**
+**Review-fix 2 gate (Coordinator / operator should run locally):**
 
 ```bash
 PYTHONPATH=. python3.10 -m pytest -q \
@@ -74,19 +85,22 @@ PYTHONPATH=. python3.10 -m pytest -q \
   tests/test_dev_coordinator_runner_install.py \
   tests/test_dev_coordinator.py
 
-git diff --check 59973911dd4e6186f66aabbf65909cf9a6c95858 HEAD
+git diff --check 319524d62ffd769d9056986a61a3cfd4e02f8aed HEAD
 ```
+
+**Executor session (review-fix 2):** shell commands unavailable/rejected; tests authored but not executed. Coordinator must verify before merge.
 
 ## Risks
 
 | Risk | Mitigation |
 | --- | --- |
-| Runner stopped after failed ff-only with dirty/uncertain state | `HUMAN_REQUIRED`; no auto reset/clean; documented rollback |
-| `runner_start_failed` erased by next `NOOP` cycle (review-fix 1) | Sticky `HUMAN_REQUIRED` + bounded start recovery under locks |
-| Manual one-shot races updater before process lock | Updater holds process lock in critical section; documented exceptional race |
-| Runner starts under updater maintenance exclusive | Runner skips scans until exclusive released (no terminal candidate failures) |
-| `coordinator_repo_root` drift between runner/updater configs | Parser rejects mismatch when both JSON files exist |
-| Live timer enabled accidentally in dev | Tests use fake systemctl; Executor did not enable live systemd |
+| Runner stopped after failed ff-only with dirty/uncertain state | `HUMAN_REQUIRED`; `pending_update` preserved; no auto reset/clean |
+| Crash after stop/merge before start | `pending_update` marker enables deterministic recovery on next tick |
+| `runner_start_failed` erased by next `NOOP` cycle | `pending_update` + sticky `last_result` preservation on SKIPPED |
+| Wrong-origin fetch before authority check (review-fix 2) | Pre-fetch gate blocks fetch entirely |
+| Manual one-shot races updater before process lock | Updater holds process lock in critical section |
+| Runner starts under updater maintenance exclusive | Runner skips scans until exclusive released |
+| Legacy states without `pending_update` | Legacy `runner_start_failed` recovery path retained |
 
 ## Rollback
 
@@ -104,6 +118,8 @@ systemctl --user disable --now ai-core-dev-coordinator-runner.service
 ```
 
 3. Revert implementation commit on transition branch if git state is clean and operator authorizes manual checkout repair.
+
+4. If `pending_update` marker is stuck: inspect git HEAD vs `pre_update_head`/`target_head` in `updater-state.json` before manual intervention; do not force-reset.
 
 Manual one-shot Coordinator (`python -m tools.dev_coordinator`) remains available when process lock is not held.
 

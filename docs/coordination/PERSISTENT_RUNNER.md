@@ -44,6 +44,9 @@ Architect / Spec Kit
 
 - Separate `systemd --user` timer + oneshot updater (`tools.dev_coordinator.updater`).
 - Updates only the configured **transition branch** via `git fetch origin` + `git merge --ff-only origin/<branch>`.
+- **Pre-fetch authority gate**: before any `git fetch`, verify worktree, exact transition branch, clean state, expected `origin`, and readable HEAD. Wrong origin/branch/dirty checkout returns `FAIL_CLOSED` without fetch, stop, or git mutation.
+- **Durable `pending_update` marker**: persisted in `updater-state.json` **before** `systemctl stop`, recording pre-update head, target remote head, and transaction phase. Survives until explicitly resolved; crash recovery does not rely on `last_result` alone.
+- **Crash recovery** (next timer tick, normal lock order): if HEAD equals recorded target → one bounded `systemctl start`, no merge; if HEAD equals pre-update head → one bounded start to restore service, no merge (fresh update deferred); uncertain/dirty/wrong authority → `HUMAN_REQUIRED`, marker preserved. Transient `SKIPPED` (maintenance/process lock) does not clear the marker.
 - **Maintenance gate** (`coordinator-maintenance.lock`): runner holds **shared** during each scan; updater holds **exclusive** during update window.
 - **Updater exclusion** (`coordinator-updater.lock`): one updater instance at a time.
 - **Coordinator process lock** (`coordinator.lock`): updater holds during stop+merge+start; manual one-shot Coordinator fails safely if lock held.
@@ -131,6 +134,7 @@ Atomically persisted at `${state_dir}/updater-state.json`:
 
 - `local_head`, `remote_head`, `last_attempt_at`, `last_result` (`NOOP`, `SUCCESS`, `SKIPPED`, `FAIL_CLOSED`, `HUMAN_REQUIRED`)
 - `reason`, `last_success_head`, `last_runner_restart_at`
+- `pending_update` (optional): `pre_update_head`, `target_head`, `phase`, `entered_at` — durable transaction marker for crash recovery; cleared only after proven resolution
 
 ## Commands
 
