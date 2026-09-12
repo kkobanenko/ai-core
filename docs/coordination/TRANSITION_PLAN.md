@@ -58,7 +58,8 @@ Human says "Твой ход"
 | --- | --- | --- |
 | v0.1 (this branch) | Optional Coordinator shadow/launch; docs; Spec Kit scaffold | Active bridge WAIT; in-flight S2/S2A; PR #3/#4/#5; runtime API |
 | Finish current package | Complete S2/S2A under **old** bridge scheme | Do not mid-flight convert to Spec Kit |
-| First suitable **new** package | Spec Kit–native planning/execution artifacts | Keep bridge as control channel until Architect says otherwise |
+| S2A finished | Persistent runner (`feat/001-persistent-coordinator-runner-20260912`) | First Spec Kit-native package; bridge is transport only for new packages |
+| First suitable **new** package | Spec Kit–native planning/execution artifacts | `spec.md`/`plan.md`/`tasks.md` are authority; `next-prompt.md` carries bounded EXECUTOR_READY transport |
 | v0.2 (future) | May move commit/push/report publication into Coordinator | Still no autonomous architectural decisions |
 
 ## Fail-closed defaults
