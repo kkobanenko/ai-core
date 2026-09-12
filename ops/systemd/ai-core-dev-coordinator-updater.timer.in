@@ -1,0 +1,10 @@
+[Unit]
+Description=AI Core Coordinator Self-Updater Timer
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec={{TIMER_INTERVAL}}
+Persistent=true
+
+[Install]
+WantedBy=timers.target
