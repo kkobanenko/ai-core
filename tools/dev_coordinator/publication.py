@@ -16,6 +16,14 @@ from tools.dev_coordinator.models import BridgePrompt, FinalStatus
 
 FORBIDDEN_ADD_ARGS = frozenset({".", "-A", "--all", "-u", "--update"})
 
+# File-level перечисление untracked: без --untracked-files=all git может
+# свернуть вложенные файлы в каталог (например `docs/handoffs/`).
+PORCELAIN_STATUS_ARGS: tuple[str, ...] = (
+    "status",
+    "--porcelain",
+    "--untracked-files=all",
+)
+
 
 @dataclass(frozen=True)
 class PostconditionResult:
@@ -42,7 +50,7 @@ class PublicationResult:
 
 
 def parse_porcelain_paths(porcelain: str) -> tuple[str, ...]:
-    """Извлечь пути из `git status --porcelain` (без доверия Executor)."""
+    """Извлечь пути из `git status --porcelain --untracked-files=all`."""
     paths: list[str] = []
     for raw in porcelain.splitlines():
         if not raw.strip():
@@ -69,7 +77,7 @@ def evaluate_postconditions(
     allowed = set(prompt.allowed_paths)
     required = list(prompt.required_paths)
 
-    code, out, err = git_runner(["status", "--porcelain"], wt)
+    code, out, err = git_runner(list(PORCELAIN_STATUS_ARGS), wt)
     if code != 0:
         return PostconditionResult(
             ok=False,

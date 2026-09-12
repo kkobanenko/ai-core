@@ -15,7 +15,10 @@ from typing import Optional
 
 from tools.dev_coordinator.gitutil import GitRunner, default_git_runner
 from tools.dev_coordinator.models import FinalStatus
-from tools.dev_coordinator.publication import parse_porcelain_paths
+from tools.dev_coordinator.publication import (
+    PORCELAIN_STATUS_ARGS,
+    parse_porcelain_paths,
+)
 
 # Запрещённые символы glob / absolute / traversal.
 _GLOB_CHARS_RE = re.compile(r"[*?\[\]]")
@@ -123,7 +126,7 @@ def snapshot_transients(
 ) -> tuple[tuple[TransientBaseline, ...], Optional[str]]:
     """Снимок до Executor. Если любой путь exists/tracked — ошибка."""
     wt = executor_worktree.resolve()
-    code, porcelain, err = git_runner(["status", "--porcelain"], wt)
+    code, porcelain, err = git_runner(list(PORCELAIN_STATUS_ARGS), wt)
     if code != 0:
         return (), f"git status failed before launch: {err.strip()}"
 
@@ -182,7 +185,7 @@ def classify_and_cleanup_transients(
     declared = prompt_transient
     baseline_by_path = {b.path: b for b in baselines}
 
-    code, porcelain, err = git_runner(["status", "--porcelain"], wt)
+    code, porcelain, err = git_runner(list(PORCELAIN_STATUS_ARGS), wt)
     if code != 0:
         return TransientCleanupResult(
             ok=False,
@@ -319,7 +322,7 @@ def classify_and_cleanup_transients(
         cleaned.append(path)
 
     # Повторный status: transient должны исчезнуть; unexpected — нет.
-    code2, porcelain2, err2 = git_runner(["status", "--porcelain"], wt)
+    code2, porcelain2, err2 = git_runner(list(PORCELAIN_STATUS_ARGS), wt)
     if code2 != 0:
         return TransientCleanupResult(
             ok=False,

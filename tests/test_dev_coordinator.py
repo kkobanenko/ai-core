@@ -560,6 +560,7 @@ def test_concurrent_coordinators_at_most_one_launch(tmp_path: Path):
 
 from tools.dev_coordinator.models import FinalStatus
 from tools.dev_coordinator.publication import (
+    PORCELAIN_STATUS_ARGS,
     evaluate_postconditions,
     parse_porcelain_paths,
     publish_exact_paths,
@@ -604,6 +605,118 @@ def test_parse_porcelain_paths():
     assert "uv.lock" in paths
     assert "docs/handoffs/x.md" in paths
     assert "README.md" in paths
+
+
+NESTED_REPORT = "docs/handoffs/report.md"
+NESTED_SIBLING = "docs/handoffs/extra.md"
+
+
+def test_git_porcelain_untracked_files_all_lists_nested_files(tmp_path: Path):
+    """Regression R5: real git must enumerate nested files, not parent dirs."""
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "coordinator@test"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "coordinator"],
+        cwd=tmp_path,
+        check=True,
+    )
+    nested = tmp_path / "docs" / "handoffs"
+    nested.mkdir(parents=True)
+    (nested / "report.md").write_text("# report\n", encoding="utf-8")
+    (nested / "extra.md").write_text("# extra\n", encoding="utf-8")
+
+    from tools.dev_coordinator.gitutil import default_git_runner
+
+    code, out, err = default_git_runner(list(PORCELAIN_STATUS_ARGS), tmp_path)
+    assert code == 0, err
+    paths = parse_porcelain_paths(out)
+    assert NESTED_REPORT in paths
+    assert NESTED_SIBLING in paths
+    assert "docs/handoffs/" not in paths
+
+
+def test_postconditions_nested_untracked_exact_path_passes(tmp_path: Path):
+    report = tmp_path / NESTED_REPORT
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text("# report\n", encoding="utf-8")
+
+    text = _ready_pub(
+        str(tmp_path),
+        allowed_paths=NESTED_REPORT,
+        required_paths=NESTED_REPORT,
+    )
+    prompt = parse_next_prompt(text)
+
+    def git(args, cwd):
+        cmd = list(args)
+        if cmd[:2] == ["status", "--porcelain"]:
+            assert "--untracked-files=all" in cmd
+            return 0, f"?? {NESTED_REPORT}\n", ""
+        if cmd[:2] == ["diff", "--check"]:
+            return 0, "", ""
+        return 1, "", f"unexpected {cmd}"
+
+    post = evaluate_postconditions(prompt, executor_worktree=tmp_path, git_runner=git)
+    assert post.ok is True
+    assert NESTED_REPORT in post.changed_paths
+
+
+def test_postconditions_directory_collapsed_path_fail_closed(tmp_path: Path):
+    report = tmp_path / NESTED_REPORT
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text("# report\n", encoding="utf-8")
+
+    text = _ready_pub(
+        str(tmp_path),
+        allowed_paths=NESTED_REPORT,
+        required_paths=NESTED_REPORT,
+    )
+    prompt = parse_next_prompt(text)
+
+    def git(args, cwd):
+        cmd = list(args)
+        if cmd[:2] == ["status", "--porcelain"]:
+            return 0, "?? docs/handoffs/\n", ""
+        if cmd[:2] == ["diff", "--check"]:
+            return 0, "", ""
+        return 1, "", f"unexpected {cmd}"
+
+    post = evaluate_postconditions(prompt, executor_worktree=tmp_path, git_runner=git)
+    assert post.ok is False
+    assert "docs/handoffs/" in post.unexpected_paths
+
+
+def test_postconditions_nested_sibling_fail_closed(tmp_path: Path):
+    report = tmp_path / NESTED_REPORT
+    sibling = tmp_path / NESTED_SIBLING
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text("# report\n", encoding="utf-8")
+    sibling.write_text("# extra\n", encoding="utf-8")
+
+    text = _ready_pub(
+        str(tmp_path),
+        allowed_paths=NESTED_REPORT,
+        required_paths=NESTED_REPORT,
+    )
+    prompt = parse_next_prompt(text)
+
+    def git(args, cwd):
+        cmd = list(args)
+        if cmd[:2] == ["status", "--porcelain"]:
+            return 0, f"?? {NESTED_REPORT}\n?? {NESTED_SIBLING}\n", ""
+        if cmd[:2] == ["diff", "--check"]:
+            return 0, "", ""
+        return 1, "", f"unexpected {cmd}"
+
+    post = evaluate_postconditions(prompt, executor_worktree=tmp_path, git_runner=git)
+    assert post.ok is False
+    assert NESTED_SIBLING in post.unexpected_paths
 
 
 def test_publication_requires_paths_when_commit_true():
@@ -1290,6 +1403,96 @@ def test_two_transients_only_one_declared(tmp_path: Path):
     assert result.ok is False
     assert "extra.lock" in result.reason
     assert (executor / "uv.lock").exists()  # no cleanup when undeclared unexpected
+
+
+def test_snapshot_transients_uses_untracked_files_all(tmp_path: Path):
+    executor = tmp_path / "wt"
+    executor.mkdir()
+    captured: list[list[str]] = []
+
+    def git(args, cwd):
+        cmd = list(args)
+        captured.append(cmd)
+        if cmd[:2] == ["ls-files", "--error-unmatch"]:
+            return 1, "", "not tracked"
+        if cmd[:2] == ["status", "--porcelain"]:
+            return 0, "", ""
+        return 1, "", f"unexpected {cmd}"
+
+    baselines, err = snapshot_transients(
+        ("uv.lock",), executor_worktree=executor, git_runner=git
+    )
+    assert err is None
+    assert baselines
+    status_calls = [c for c in captured if c[:2] == ["status", "--porcelain"]]
+    assert status_calls
+    assert "--untracked-files=all" in status_calls[0]
+
+
+def test_transient_nested_untracked_cleanup(tmp_path: Path):
+    executor = tmp_path / "wt"
+    executor.mkdir()
+    transient_path = "build/artifact.lock"
+    lock = executor / transient_path
+    lock.parent.mkdir(parents=True)
+    lock.write_text("x\n", encoding="utf-8")
+    from tools.dev_coordinator.transient import TransientBaseline
+
+    baselines = (TransientBaseline(transient_path, False, False, ""),)
+    calls = {"n": 0}
+
+    def git(args, cwd):
+        cmd = list(args)
+        if cmd[:2] == ["status", "--porcelain"]:
+            assert "--untracked-files=all" in cmd
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return 0, f"?? {transient_path}\n", ""
+            return 0, "", ""
+        return 1, "", f"unexpected {cmd}"
+
+    result = classify_and_cleanup_transients(
+        prompt_allowed=(REPORT,),
+        prompt_transient=(transient_path,),
+        baselines=baselines,
+        executor_worktree=executor,
+        git_runner=git,
+    )
+    assert result.ok is True
+    assert result.cleaned == (transient_path,)
+    assert not lock.exists()
+
+
+def test_transient_nested_sibling_fail_closed(tmp_path: Path):
+    executor = tmp_path / "wt"
+    executor.mkdir()
+    transient_path = "build/artifact.lock"
+    sibling_path = "build/extra.lock"
+    lock = executor / transient_path
+    sibling = executor / sibling_path
+    lock.parent.mkdir(parents=True)
+    lock.write_text("a\n", encoding="utf-8")
+    sibling.write_text("b\n", encoding="utf-8")
+    from tools.dev_coordinator.transient import TransientBaseline
+
+    baselines = (TransientBaseline(transient_path, False, False, ""),)
+
+    def git(args, cwd):
+        cmd = list(args)
+        if cmd[:2] == ["status", "--porcelain"]:
+            return 0, f"?? {transient_path}\n?? {sibling_path}\n", ""
+        return 1, "", f"unexpected {cmd}"
+
+    result = classify_and_cleanup_transients(
+        prompt_allowed=(REPORT,),
+        prompt_transient=(transient_path,),
+        baselines=baselines,
+        executor_worktree=executor,
+        git_runner=git,
+    )
+    assert result.ok is False
+    assert sibling_path in result.reason
+    assert lock.exists()
 
 
 def test_cleanup_then_second_status_unexpected(tmp_path: Path):
