@@ -1,0 +1,18 @@
+[Unit]
+Description=AI Core Persistent Coordinator Runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{PYTHON_BIN}} -m tools.dev_coordinator.runner --config {{CONFIG_PATH}}
+WorkingDirectory={{COORDINATOR_REPO_ROOT}}
+Environment=PYTHONPATH={{COORDINATOR_REPO_ROOT}}
+Restart=on-failure
+RestartSec=5
+# Журнал systemd user service (без sudo).
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

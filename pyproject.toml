@@ -22,3 +22,5 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Репозиторий в path, чтобы `tools.dev_coordinator` импортировался в тестах.
+pythonpath = [".", "src"]

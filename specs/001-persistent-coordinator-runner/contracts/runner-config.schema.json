@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kkobanenko/ai-core/specs/001-persistent-coordinator-runner/contracts/runner-config.schema.json",
+  "title": "Persistent Coordinator Runner configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "poll_interval_seconds",
+    "coordinator_repo_root",
+    "managed_worktree_root",
+    "agent_bin",
+    "bridge_prefix",
+    "repositories"
+  ],
+  "properties": {
+    "poll_interval_seconds": {
+      "type": "integer",
+      "minimum": 5,
+      "maximum": 300,
+      "default": 15
+    },
+    "coordinator_repo_root": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute path to the checked-out Coordinator tooling repository/worktree."
+    },
+    "managed_worktree_root": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute root below which runner-created bridge and executor worktrees must live."
+    },
+    "agent_bin": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute path to the Cursor agent executable."
+    },
+    "bridge_prefix": {
+      "const": "coord/bridge/"
+    },
+    "repositories": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Absolute path to the corresponding local clone."
+      },
+      "description": "Allowlisted canonical GitHub repo name to local clone path mapping. Initial live config contains only kkobanenko/ai-core and kkobanenko/platform-control."
+    }
+  }
+}
