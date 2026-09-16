@@ -377,6 +377,10 @@ def _run_git(
 ) -> subprocess.CompletedProcess[str]:
     """git subprocess с опциональным env (наследует os.environ)."""
     merged = os.environ.copy()
+    merged.setdefault("GIT_AUTHOR_NAME", "Test Author")
+    merged.setdefault("GIT_AUTHOR_EMAIL", "author@example.com")
+    merged.setdefault("GIT_COMMITTER_NAME", "Test Committer")
+    merged.setdefault("GIT_COMMITTER_EMAIL", "committer@example.com")
     if env:
         merged.update(env)
     return subprocess.run(
@@ -432,6 +436,8 @@ def _init_clone_with_origin(tmp_path: Path) -> tuple[Path, str, dict[str, str]]:
         ["remote", "set-url", "origin", _CANONICAL_GITHUB_ORIGIN],
         cwd=clone,
     )
+    _run_git(["config", "user.email", "author@example.com"], cwd=clone)
+    _run_git(["config", "user.name", "Test Author"], cwd=clone)
     (clone / "README.md").write_text("init\n", encoding="utf-8")
     _run_git(["add", "README.md"], cwd=clone)
     _run_git(["commit", "-m", "init"], cwd=clone)
@@ -830,6 +836,8 @@ def _init_local_github_clone(
         ["remote", "set-url", "origin", _CANONICAL_GITHUB_ORIGIN],
         cwd=clone,
     )
+    _run_git(["config", "user.email", "author@example.com"], cwd=clone)
+    _run_git(["config", "user.name", "Test Author"], cwd=clone)
     (clone / "README.md").write_text("init\n", encoding="utf-8")
     _run_git(["add", "README.md"], cwd=clone)
     _run_git(["commit", "-m", "init"], cwd=clone)
