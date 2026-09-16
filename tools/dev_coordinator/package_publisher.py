@@ -176,8 +176,14 @@ def _git_runner_with_env(
     cwd: Path,
     extra_env: dict[str, str],
 ) -> tuple[int, str, str]:
-    """Вызов git_runner с дополнительными переменными окружения."""
-    # default_git_runner не принимает env — оборачиваем subprocess только здесь.
+    """Вызов git с GIT_INDEX_FILE и др. env-переменными.
+
+    Injected test runner (не default_git_runner) получает те же args без env:
+    FakeRemoteState симулирует plumbing. Реальный git — только default_git_runner.
+    """
+    if base_runner is not default_git_runner:
+        return base_runner(list(args), cwd)
+
     import subprocess
 
     env = os.environ.copy()
@@ -289,9 +295,12 @@ def snapshots_equal(a: CheckoutSnapshot, b: CheckoutSnapshot) -> bool:
 
 
 def _normalize_sha(sha: str) -> str:
+    """Требовать полный 40-символьный hex SHA (без abbreviated)."""
     text = sha.strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{4,40}", text):
-        raise ValueError(f"invalid git SHA: {sha!r}")
+    if not re.fullmatch(r"[0-9a-f]{40}", text):
+        raise ValueError(
+            f"invalid git SHA: {sha!r} (must be full 40-character hexadecimal)"
+        )
     return text
 
 
@@ -318,8 +327,10 @@ def _validate_spec_inputs(spec: WorkPackageSpec, config: RunnerConfig) -> list[s
     if spec.hosted_ci not in _ALLOWED_HOSTED_CI:
         errors.append(f"unsupported hosted_ci: {spec.hosted_ci!r}")
 
-    if spec.max_executor_runs < 1:
-        errors.append(f"max_executor_runs must be >= 1: {spec.max_executor_runs}")
+    if spec.max_executor_runs != 1:
+        errors.append(
+            f"max_executor_runs must be exactly 1: {spec.max_executor_runs}"
+        )
 
     if not spec.allowed_paths:
         errors.append("allowed_paths must be non-empty")
@@ -399,37 +410,29 @@ def _create_commit_with_prompt(
     message: str,
     git: _GitSession,
 ) -> tuple[Optional[str], Optional[str]]:
-    """Изолированный commit-tree: не трогает primary index/worktree."""
+    """Изолированный commit-tree: временный GIT_INDEX_FILE, объекты в repo DB."""
     git_dir = _resolve_git_dir(repo_clone)
     if git_dir is None:
         return None, f"unable to resolve git dir for {repo_clone}"
 
+    # Только index изолирован; blob/tree/commit пишутся в object DB clone,
+    # чтобы push мог найти commit после выхода из helper.
     with tempfile.TemporaryDirectory(prefix="pkg-pub-") as tmp:
-        obj_dir = Path(tmp) / "objects"
-        obj_dir.mkdir()
         index_file = Path(tmp) / "index"
+        prompt_file = Path(tmp) / "prompt-body.md"
+        prompt_file.write_text(prompt_text, encoding="utf-8")
         env = {
             "GIT_INDEX_FILE": str(index_file),
-            "GIT_OBJECT_DIRECTORY": str(obj_dir),
-            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(git_dir / "objects"),
         }
 
-        # Blob для prompt файла (stdin → isolated object store).
-        import subprocess
-
-        proc = subprocess.run(
-            ["git", "hash-object", "-w", "--stdin"],
-            cwd=str(repo_clone),
-            input=prompt_text,
-            capture_output=True,
-            text=True,
-            check=False,
-            env={**os.environ, **env},
+        code_h, blob_sha, err_h = git.run(
+            ["hash-object", "-w", str(prompt_file)],
+            repo_clone,
+            env=env,
         )
-        git.commands.append(("hash-object", "-w", "--stdin"))
-        if proc.returncode != 0:
-            return None, f"hash-object stdin failed: {proc.stderr.strip()}"
-        blob_sha = proc.stdout.strip()
+        if code_h != 0:
+            return None, f"hash-object failed: {err_h.strip()}"
+        blob_sha = blob_sha.strip()
 
         # Parent tree → обновить один файл.
         code_r, _, err_r = git.run(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -149,7 +150,10 @@ class FakeRemoteState:
             branch = dst.replace("refs/heads/", "")
             self.refs[branch] = src
             return 0, "", ""
-        # commit-tree plumbing: делегируем минимально для тестов publish
+        if cmd[:2] == ["hash-object", "-w"]:
+            blob_sha = "dddddddddddddddddddddddddddddddddddddddd"
+            return 0, blob_sha + "\n", ""
+        # commit-tree plumbing: делегируем минимально для injected transport
         if cmd[0] == "read-tree":
             return 0, "", ""
         if cmd[0] == "update-index":
@@ -443,3 +447,215 @@ def test_target_main_rejected(tmp_path: Path) -> None:
     outcome = publish_work_package(spec, git_runner=remote.runner)
     assert not outcome.ok
     assert any("forbidden target branch" in e for e in outcome.errors)
+
+
+def test_max_executor_runs_must_be_one(tmp_path: Path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    spec = _base_spec(tmp_path, clone)
+    bad = replace(spec, max_executor_runs=2)
+    remote = FakeRemoteState()
+    outcome = publish_work_package(bad, git_runner=remote.runner)
+    assert not outcome.ok
+    assert any("max_executor_runs must be exactly 1" in e for e in outcome.errors)
+
+
+def test_base_sha_short_rejected(tmp_path: Path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    spec = _base_spec(tmp_path, clone, base_sha="abc1234")
+    remote = FakeRemoteState()
+    outcome = publish_work_package(spec, git_runner=remote.runner)
+    assert not outcome.ok
+    assert any("40-character" in e for e in outcome.errors)
+
+
+def test_base_sha_invalid_chars_rejected(tmp_path: Path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    spec = _base_spec(
+        tmp_path,
+        clone,
+        base_sha="g" * 40,
+    )
+    remote = FakeRemoteState()
+    outcome = publish_work_package(spec, git_runner=remote.runner)
+    assert not outcome.ok
+    assert any("invalid git SHA" in e for e in outcome.errors)
+
+
+def test_injected_runner_receives_plumbing_commands(tmp_path: Path) -> None:
+    """Plumbing commit-tree идёт через injected runner, не мимо него."""
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    spec = _base_spec(tmp_path, clone)
+    remote = FakeRemoteState()
+    outcome = publish_work_package(spec, git_runner=remote.runner)
+    assert outcome.ok
+    plumbing = {"hash-object", "read-tree", "update-index", "write-tree", "commit-tree"}
+    executed = {cmd[0] for cmd, _ in remote.commands}
+    assert plumbing <= executed
+
+
+def _git_ls_remote(bare: Path, branch: str) -> str | None:
+    proc = subprocess.run(
+        ["git", "ls-remote", str(bare), f"refs/heads/{branch}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    line = proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
+    if not line:
+        return None
+    return line.split()[0]
+
+
+def _git_show_file(bare: Path, sha: str, path: str) -> str:
+    proc = subprocess.run(
+        ["git", "--git-dir", str(bare), "show", f"{sha}:{path}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return proc.stdout
+
+
+def _init_local_github_clone(tmp_path: Path) -> tuple[Path, Path, str]:
+    """Bare remote + clone с canonical GitHub origin и url rewrite на bare."""
+    bare = tmp_path / "remote.git"
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", str(bare), str(clone)],
+        check=True,
+        capture_output=True,
+    )
+    github_origin = "git@github.com:kkobanenko/ai-core.git"
+    subprocess.run(
+        ["git", "remote", "set-url", "origin", github_origin],
+        cwd=clone,
+        check=True,
+        capture_output=True,
+    )
+    bare_uri = bare.resolve().as_uri()
+    subprocess.run(
+        ["git", "config", f"url.{bare_uri}/.insteadOf", github_origin],
+        cwd=clone,
+        check=True,
+        capture_output=True,
+    )
+    (clone / "README.md").write_text("init\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=clone, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=clone,
+        check=True,
+        capture_output=True,
+    )
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=clone,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "push", "-u", "origin", "main"],
+        cwd=clone,
+        check=True,
+        capture_output=True,
+    )
+    return bare, clone, base_sha
+
+
+def test_real_git_integration_publish_and_idempotency(tmp_path: Path) -> None:
+    """Non-dry-run: real git, local bare remote, canonical GitHub origin rewrite."""
+    bare, clone, base_sha = _init_local_github_clone(tmp_path)
+    target_branch = "feat/integration-pkg"
+    bridge_branch = "coord/bridge/integration-pkg"
+
+    assert _git_ls_remote(bare, target_branch) is None
+    assert _git_ls_remote(bare, bridge_branch) is None
+
+    # Dirty primary checkout: tracked modification + untracked file.
+    readme = clone / "README.md"
+    readme.write_text("init\nmodified\n", encoding="utf-8")
+    untracked = clone / "untracked-dirty.txt"
+    untracked.write_text("leave me\n", encoding="utf-8")
+
+    spec = _base_spec(
+        tmp_path,
+        clone,
+        dry_run=False,
+        target_branch=target_branch,
+        bridge_branch=bridge_branch,
+        base_sha=base_sha,
+    )
+    config = parse_runner_config(json.loads(spec.runner_config_path.read_text()))
+    expected_prompt = render_next_prompt(
+        spec=spec,
+        target_worktree=derive_executor_worktree_path(
+            config.managed_worktree_root, spec.target_repo, spec.target_branch
+        ),
+    )
+
+    before = read_checkout_snapshot(clone, _real_git_session())
+    index_before = subprocess.run(
+        ["git", "ls-files", "--stage"],
+        cwd=clone,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+    outcome1 = publish_work_package(spec)
+    assert outcome1.ok, outcome1.errors
+    assert outcome1.reason == "published"
+    assert not outcome1.resumed_bridge
+
+    target_sha = _git_ls_remote(bare, target_branch)
+    bridge_sha = _git_ls_remote(bare, bridge_branch)
+    assert target_sha == base_sha
+    assert bridge_sha is not None
+    assert bridge_sha == outcome1.bridge_remote_sha
+
+    # Bridge commit exists in bare object store and is pushable/readable.
+    subprocess.run(
+        ["git", "--git-dir", str(bare), "cat-file", "-e", f"{bridge_sha}^{{commit}}"],
+        check=True,
+        capture_output=True,
+    )
+    remote_prompt = _git_show_file(
+        bare, bridge_sha, "docs/agent-bridge/next-prompt.md"
+    )
+    assert remote_prompt == expected_prompt
+
+    after1 = read_checkout_snapshot(clone, _real_git_session())
+    assert snapshots_equal(before, after1)
+    index_after1 = subprocess.run(
+        ["git", "ls-files", "--stage"],
+        cwd=clone,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert index_after1 == index_before
+    assert readme.read_text() == "init\nmodified\n"
+    assert untracked.read_text() == "leave me\n"
+
+    outcome2 = publish_work_package(spec)
+    assert outcome2.ok
+    assert outcome2.resumed_bridge
+    assert _git_ls_remote(bare, target_branch) == target_sha
+    assert _git_ls_remote(bare, bridge_branch) == bridge_sha
+
+    after2 = read_checkout_snapshot(clone, _real_git_session())
+    assert snapshots_equal(before, after2)
+    index_after2 = subprocess.run(
+        ["git", "ls-files", "--stage"],
+        cwd=clone,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert index_after2 == index_before
