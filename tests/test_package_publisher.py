@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import Mapping
 
 import pytest
 
@@ -26,6 +28,9 @@ from tools.dev_coordinator.runner_config import parse_runner_config
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PUBLISH_SCRIPT = _REPO_ROOT / "scripts" / "publish_dev_coordinator_package.py"
+
+_CANONICAL_GITHUB_ORIGIN = "git@github.com:kkobanenko/ai-core.git"
+_MAIN_REF = "refs/heads/main"
 
 _BASE_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 _BRIDGE_SHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -281,30 +286,137 @@ def test_identical_package_rerun_idempotent(tmp_path: Path) -> None:
     assert push_cmds == []
 
 
-def _init_clone_with_origin(tmp_path: Path) -> tuple[Path, str]:
-    """Bare remote + clone с origin kkobanenko/ai-core."""
+def _write_fake_github_ssh_script(tmp_path: Path) -> Path:
+    """Локальный fake SSH: только git@github.com/kkobanenko/ai-core -> bare repo."""
+    script = tmp_path / "fake-github-ssh.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import os
+import sys
+
+EXPECTED_HOST = "git@github.com"
+EXPECTED_REPO = "kkobanenko/ai-core"
+ALLOWED_CMDS = frozenset({"git-upload-pack", "git-receive-pack"})
+
+def _fail(message: str) -> None:
+    print(message, file=sys.stderr)
+    sys.exit(1)
+
+args = sys.argv[1:]
+try:
+    host_idx = args.index(EXPECTED_HOST)
+except ValueError:
+    _fail(f"fake-ssh: unexpected invocation (no {EXPECTED_HOST}): {args!r}")
+
+rest = args[host_idx + 1 :]
+if len(rest) < 2:
+    _fail(f"fake-ssh: insufficient args after host: {rest!r}")
+
+cmd = rest[0]
+repo = rest[1].strip("'\\"")
+repo_norm = repo[:-4] if repo.endswith(".git") else repo
+if repo_norm != EXPECTED_REPO:
+    _fail(f"fake-ssh: unexpected repo: {repo!r}")
+
+if cmd not in ALLOWED_CMDS:
+    _fail(f"fake-ssh: unexpected command: {cmd!r}")
+
+bare = os.environ.get("FAKE_GIT_BARE_REPO")
+if not bare:
+    _fail("fake-ssh: FAKE_GIT_BARE_REPO is not set")
+
+invocation_log = os.environ.get("FAKE_SSH_INVOCATION_LOG")
+if invocation_log:
+    with open(invocation_log, "a", encoding="utf-8") as handle:
+        handle.write(f"{cmd}\\n")
+
+os.execvp(cmd, [cmd, bare])
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script
+
+
+def _fake_ssh_env(
+    bare: Path,
+    script: Path,
+    invocation_log: Path,
+) -> dict[str, str]:
+    """Env для subprocess/git: fake SSH transport без url.insteadOf."""
+    return {
+        "GIT_SSH_COMMAND": str(script),
+        "FAKE_GIT_BARE_REPO": str(bare.resolve()),
+        "FAKE_SSH_INVOCATION_LOG": str(invocation_log),
+    }
+
+
+def _run_git(
+    args: list[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """git subprocess с опциональным env (наследует os.environ)."""
+    merged = os.environ.copy()
+    if env:
+        merged.update(env)
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=True,
+        env=merged,
+    )
+
+
+def _push_head_to_main(
+    clone: Path,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    """Push текущего HEAD в refs/heads/main без зависимости от defaultBranch."""
+    _run_git(
+        ["push", "-u", "origin", f"HEAD:{_MAIN_REF}"],
+        cwd=clone,
+        env=env,
+    )
+
+
+def _assert_origin_canonical(clone: Path) -> None:
+    """origin get-url должен оставаться literal GitHub SSH (без insteadOf)."""
+    proc = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=clone,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert proc.stdout.strip() == _CANONICAL_GITHUB_ORIGIN
+
+
+def _init_clone_with_origin(tmp_path: Path) -> tuple[Path, str, dict[str, str]]:
+    """Bare remote + clone с canonical GitHub origin и fake SSH transport."""
     bare = tmp_path / "remote.git"
     clone = tmp_path / "clone"
+    script = _write_fake_github_ssh_script(tmp_path)
+    ssh_log = tmp_path / "ssh-invocations.log"
+    git_env = _fake_ssh_env(bare, script, ssh_log)
+
     subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
     subprocess.run(
         ["git", "clone", str(bare), str(clone)],
         check=True,
         capture_output=True,
     )
-    subprocess.run(
-        ["git", "remote", "set-url", "origin", "git@github.com:kkobanenko/ai-core.git"],
+    _run_git(
+        ["remote", "set-url", "origin", _CANONICAL_GITHUB_ORIGIN],
         cwd=clone,
-        check=True,
-        capture_output=True,
     )
     (clone / "README.md").write_text("init\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md"], cwd=clone, check=True, capture_output=True)
-    subprocess.run(
-        ["git", "commit", "-m", "init"],
-        cwd=clone,
-        check=True,
-        capture_output=True,
-    )
+    _run_git(["add", "README.md"], cwd=clone)
+    _run_git(["commit", "-m", "init"], cwd=clone)
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=clone,
@@ -312,13 +424,15 @@ def _init_clone_with_origin(tmp_path: Path) -> tuple[Path, str]:
         text=True,
         check=True,
     ).stdout.strip()
-    subprocess.run(
-        ["git", "push", "-u", "origin", "main"],
-        cwd=clone,
-        check=True,
-        capture_output=True,
-    )
-    return clone, head
+    _push_head_to_main(clone, env=git_env)
+    _assert_origin_canonical(clone)
+    return clone, head, git_env
+
+
+def _apply_git_env(monkeypatch: pytest.MonkeyPatch, git_env: dict[str, str]) -> None:
+    """Пробросить fake SSH env в subprocess publisher."""
+    for key, value in git_env.items():
+        monkeypatch.setenv(key, value)
 
 
 def test_dry_run_no_push_commands(tmp_path: Path) -> None:
@@ -339,9 +453,13 @@ def test_forbidden_git_commands_rejected() -> None:
         _assert_git_command_allowed(("push", "origin", "+refs/heads/x"))
 
 
-def test_dirty_primary_checkout_preserved(tmp_path: Path) -> None:
+def test_dirty_primary_checkout_preserved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Реальный git: dirty clone остаётся неизменным после dry-run."""
-    clone, head = _init_clone_with_origin(tmp_path)
+    clone, head, git_env = _init_clone_with_origin(tmp_path)
+    _apply_git_env(monkeypatch, git_env)
     dirty_file = clone / "dirty.txt"
     dirty_file.write_text("changed\n", encoding="utf-8")
 
@@ -366,7 +484,10 @@ def test_dry_run_mutation_boundary(tmp_path: Path) -> None:
     assert remote.refs == refs_before
 
 
-def test_cli_unrelated_cwd_bootstrap(tmp_path: Path) -> None:
+def test_cli_unrelated_cwd_bootstrap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Запуск из чужого cwd не подхватывает локальный tools/."""
     shadow = tmp_path / "shadow_project"
     shadow.mkdir()
@@ -378,9 +499,11 @@ def test_cli_unrelated_cwd_bootstrap(tmp_path: Path) -> None:
     )
     instr = tmp_path / "task.md"
     instr.write_text("# Task\n", encoding="utf-8")
-    clone, head = _init_clone_with_origin(tmp_path)
+    clone, head, git_env = _init_clone_with_origin(tmp_path)
     cfg = _make_runner_config(tmp_path, clone)
 
+    cli_env = os.environ.copy()
+    cli_env.update(git_env)
     proc = subprocess.run(
         [
             sys.executable,
@@ -412,6 +535,7 @@ def test_cli_unrelated_cwd_bootstrap(tmp_path: Path) -> None:
         cwd=str(shadow),
         capture_output=True,
         text=True,
+        env=cli_env,
     )
     assert "shadow" not in (proc.stderr or "")
     assert proc.returncode in (0, 1)
@@ -520,38 +644,29 @@ def _git_show_file(bare: Path, sha: str, path: str) -> str:
     return proc.stdout
 
 
-def _init_local_github_clone(tmp_path: Path) -> tuple[Path, Path, str]:
-    """Bare remote + clone с canonical GitHub origin и url rewrite на bare."""
+def _init_local_github_clone(
+    tmp_path: Path,
+) -> tuple[Path, Path, str, dict[str, str], Path]:
+    """Bare remote + clone: literal GitHub origin + fake SSH (без insteadOf)."""
     bare = tmp_path / "remote.git"
     clone = tmp_path / "clone"
+    script = _write_fake_github_ssh_script(tmp_path)
+    ssh_log = tmp_path / "ssh-invocations.log"
+    git_env = _fake_ssh_env(bare, script, ssh_log)
+
     subprocess.run(["git", "init", "--bare", str(bare)], check=True, capture_output=True)
     subprocess.run(
         ["git", "clone", str(bare), str(clone)],
         check=True,
         capture_output=True,
     )
-    github_origin = "git@github.com:kkobanenko/ai-core.git"
-    subprocess.run(
-        ["git", "remote", "set-url", "origin", github_origin],
+    _run_git(
+        ["remote", "set-url", "origin", _CANONICAL_GITHUB_ORIGIN],
         cwd=clone,
-        check=True,
-        capture_output=True,
-    )
-    bare_uri = bare.resolve().as_uri()
-    subprocess.run(
-        ["git", "config", f"url.{bare_uri}/.insteadOf", github_origin],
-        cwd=clone,
-        check=True,
-        capture_output=True,
     )
     (clone / "README.md").write_text("init\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md"], cwd=clone, check=True, capture_output=True)
-    subprocess.run(
-        ["git", "commit", "-m", "init"],
-        cwd=clone,
-        check=True,
-        capture_output=True,
-    )
+    _run_git(["add", "README.md"], cwd=clone)
+    _run_git(["commit", "-m", "init"], cwd=clone)
     base_sha = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=clone,
@@ -559,21 +674,27 @@ def _init_local_github_clone(tmp_path: Path) -> tuple[Path, Path, str]:
         text=True,
         check=True,
     ).stdout.strip()
-    subprocess.run(
-        ["git", "push", "-u", "origin", "main"],
-        cwd=clone,
-        check=True,
-        capture_output=True,
-    )
-    return bare, clone, base_sha
+    _push_head_to_main(clone, env=git_env)
+    _assert_origin_canonical(clone)
+    assert _git_ls_remote(bare, "main") == base_sha
+    return bare, clone, base_sha, git_env, ssh_log
 
 
-def test_real_git_integration_publish_and_idempotency(tmp_path: Path) -> None:
-    """Non-dry-run: real git, local bare remote, canonical GitHub origin rewrite."""
-    bare, clone, base_sha = _init_local_github_clone(tmp_path)
+def test_real_git_integration_publish_and_idempotency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-dry-run: real git, fake SSH transport, canonical GitHub origin."""
+    bare, clone, base_sha, git_env, ssh_log = _init_local_github_clone(tmp_path)
     target_branch = "feat/integration-pkg"
     bridge_branch = "coord/bridge/integration-pkg"
 
+    _apply_git_env(monkeypatch, git_env)
+
+    # (1) configured origin identity remains exactly canonical before publication.
+    _assert_origin_canonical(clone)
+
+    # (2) target remote branch absent initially; (3) bridge remote branch absent.
     assert _git_ls_remote(bare, target_branch) is None
     assert _git_ls_remote(bare, bridge_branch) is None
 
@@ -607,29 +728,36 @@ def test_real_git_integration_publish_and_idempotency(tmp_path: Path) -> None:
         text=True,
         check=True,
     ).stdout
+    ssh_invocations_before = ssh_log.read_text(encoding="utf-8") if ssh_log.exists() else ""
 
     outcome1 = publish_work_package(spec)
     assert outcome1.ok, outcome1.errors
     assert outcome1.reason == "published"
     assert not outcome1.resumed_bridge
 
+    # (4) publisher creates target branch exactly at base_sha.
     target_sha = _git_ls_remote(bare, target_branch)
-    bridge_sha = _git_ls_remote(bare, bridge_branch)
     assert target_sha == base_sha
+
+    # (5) publisher creates and successfully pushes a real bridge commit.
+    bridge_sha = _git_ls_remote(bare, bridge_branch)
     assert bridge_sha is not None
     assert bridge_sha == outcome1.bridge_remote_sha
 
-    # Bridge commit exists in bare object store and is pushable/readable.
+    # (6) bridge commit exists in the local bare remote object database.
     subprocess.run(
         ["git", "--git-dir", str(bare), "cat-file", "-e", f"{bridge_sha}^{{commit}}"],
         check=True,
         capture_output=True,
     )
+
+    # (7) remote docs/agent-bridge/next-prompt.md exactly matches rendered prompt.
     remote_prompt = _git_show_file(
         bare, bridge_sha, "docs/agent-bridge/next-prompt.md"
     )
     assert remote_prompt == expected_prompt
 
+    # (11–13) dirty tracked/untracked content and index unchanged after first run.
     after1 = read_checkout_snapshot(clone, _real_git_session())
     assert snapshots_equal(before, after1)
     index_after1 = subprocess.run(
@@ -643,11 +771,28 @@ def test_real_git_integration_publish_and_idempotency(tmp_path: Path) -> None:
     assert readme.read_text() == "init\nmodified\n"
     assert untracked.read_text() == "leave me\n"
 
+    # (14) no real github.com connection: only fake SSH script was used.
+    ssh_invocations_after_first = ssh_log.read_text(encoding="utf-8")
+    assert ssh_invocations_after_first != ssh_invocations_before
+    assert "git-receive-pack" in ssh_invocations_after_first
+    assert "git-upload-pack" in ssh_invocations_after_first
+
+    receive_pack_count_after_first = ssh_invocations_after_first.count(
+        "git-receive-pack"
+    )
+
+    # (8) identical rerun is idempotent.
     outcome2 = publish_work_package(spec)
     assert outcome2.ok
     assert outcome2.resumed_bridge
+
+    # (9–10) target and bridge refs do not move on identical rerun.
     assert _git_ls_remote(bare, target_branch) == target_sha
     assert _git_ls_remote(bare, bridge_branch) == bridge_sha
+    ssh_invocations_after_second = ssh_log.read_text(encoding="utf-8")
+    assert ssh_invocations_after_second.count("git-receive-pack") == (
+        receive_pack_count_after_first
+    )
 
     after2 = read_checkout_snapshot(clone, _real_git_session())
     assert snapshots_equal(before, after2)
