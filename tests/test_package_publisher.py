@@ -74,6 +74,7 @@ def _base_spec(
     bridge_branch: str = "coord/bridge/test-pkg",
     base_sha: str = _BASE_SHA,
 ) -> WorkPackageSpec:
+    (clone / ".git").mkdir(parents=True, exist_ok=True)
     cfg = _make_runner_config(tmp_path, clone)
     config = parse_runner_config(json.loads(cfg.read_text()))
     wt = derive_executor_worktree_path(
@@ -139,7 +140,7 @@ class FakeRemoteState:
             return 0, self.dirty_status, ""
         if cmd[:2] == ["diff", "--cached", "--stat"]:
             return 0, "", ""
-        if cmd[:2] == ["show"]:
+        if cmd[0] == "show":
             # show <sha>:path
             spec = cmd[1]
             sha, path = spec.split(":", 1)
@@ -292,6 +293,7 @@ def _write_fake_github_ssh_script(tmp_path: Path) -> Path:
     script.write_text(
         """#!/usr/bin/env python3
 import os
+import shlex
 import sys
 
 EXPECTED_HOST = "git@github.com"
@@ -309,11 +311,24 @@ except ValueError:
     _fail(f"fake-ssh: unexpected invocation (no {EXPECTED_HOST}): {args!r}")
 
 rest = args[host_idx + 1 :]
-if len(rest) < 2:
+if not rest:
     _fail(f"fake-ssh: insufficient args after host: {rest!r}")
 
-cmd = rest[0]
-repo = rest[1].strip("'\\"")
+if len(rest) == 1:
+    try:
+        tokens = shlex.split(rest[0])
+    except ValueError as exc:
+        _fail(f"fake-ssh: malformed quoting in remote command: {exc}")
+elif len(rest) == 2:
+    tokens = list(rest)
+else:
+    _fail(f"fake-ssh: unexpected argv shape after host: {rest!r}")
+
+if len(tokens) != 2:
+    _fail(f"fake-ssh: expected exactly 2 tokens in remote command, got {len(tokens)}: {tokens!r}")
+
+cmd, repo_raw = tokens
+repo = repo_raw.strip("'\\"")
 repo_norm = repo[:-4] if repo.endswith(".git") else repo
 if repo_norm != EXPECTED_REPO:
     _fail(f"fake-ssh: unexpected repo: {repo!r}")
@@ -329,6 +344,9 @@ invocation_log = os.environ.get("FAKE_SSH_INVOCATION_LOG")
 if invocation_log:
     with open(invocation_log, "a", encoding="utf-8") as handle:
         handle.write(f"{cmd}\\n")
+
+if os.environ.get("FAKE_SSH_VALIDATE_ONLY") == "1":
+    sys.exit(0)
 
 os.execvp(cmd, [cmd, bare])
 """,
@@ -435,6 +453,150 @@ def _apply_git_env(monkeypatch: pytest.MonkeyPatch, git_env: dict[str, str]) -> 
         monkeypatch.setenv(key, value)
 
 
+def test_fake_ssh_parser_accepted(tmp_path: Path) -> None:
+    """Fake SSH parser принимает допустимые команды в режиме FAKE_SSH_VALIDATE_ONLY=1."""
+    script = _write_fake_github_ssh_script(tmp_path)
+    bare = tmp_path / "bare.git"
+    bare.mkdir()
+    log = tmp_path / "invocations.log"
+    base_env = {
+        **os.environ,
+        "FAKE_GIT_BARE_REPO": str(bare),
+        "FAKE_SSH_INVOCATION_LOG": str(log),
+        "FAKE_SSH_VALIDATE_ONLY": "1",
+    }
+
+    # 1. Single string form git-receive-pack
+    res = subprocess.run(
+        [sys.executable, str(script), "git@github.com", "git-receive-pack 'kkobanenko/ai-core.git'"],
+        capture_output=True,
+        text=True,
+        env=base_env,
+    )
+    assert res.returncode == 0, res.stderr
+
+    # 2. Single string form git-upload-pack without .git suffix
+    res = subprocess.run(
+        [sys.executable, str(script), "git@github.com", "git-upload-pack 'kkobanenko/ai-core'"],
+        capture_output=True,
+        text=True,
+        env=base_env,
+    )
+    assert res.returncode == 0, res.stderr
+
+    # 3. Two-token argv form
+    res = subprocess.run(
+        [sys.executable, str(script), "git@github.com", "git-receive-pack", "kkobanenko/ai-core.git"],
+        capture_output=True,
+        text=True,
+        env=base_env,
+    )
+    assert res.returncode == 0, res.stderr
+
+    # 4. SSH options before host
+    res = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "-o",
+            "BatchMode=yes",
+            "-p",
+            "22",
+            "git@github.com",
+            "git-upload-pack 'kkobanenko/ai-core.git'",
+        ],
+        capture_output=True,
+        text=True,
+        env=base_env,
+    )
+    assert res.returncode == 0, res.stderr
+
+    # Проверка журнала вызовов
+    recorded = log.read_text(encoding="utf-8").splitlines()
+    assert recorded == [
+        "git-receive-pack",
+        "git-upload-pack",
+        "git-receive-pack",
+        "git-upload-pack",
+    ]
+
+
+def test_fake_ssh_parser_rejected(tmp_path: Path) -> None:
+    """Fake SSH parser отклоняет некорректные репозитории, команды, кавычки и токены."""
+    script = _write_fake_github_ssh_script(tmp_path)
+    bare = tmp_path / "bare.git"
+    bare.mkdir()
+    log = tmp_path / "invocations.log"
+    base_env = {
+        **os.environ,
+        "FAKE_GIT_BARE_REPO": str(bare),
+        "FAKE_SSH_INVOCATION_LOG": str(log),
+        "FAKE_SSH_VALIDATE_ONLY": "1",
+    }
+
+    # Неверный репозиторий
+    res = subprocess.run(
+        [sys.executable, str(script), "git@github.com", "git-receive-pack 'kkobanenko/other-repo.git'"],
+        capture_output=True,
+        text=True,
+        env=base_env,
+    )
+    assert res.returncode != 0
+    assert "unexpected repo" in res.stderr
+
+    # Неразрешенная команда
+    res = subprocess.run(
+        [sys.executable, str(script), "git@github.com", "git-other-pack 'kkobanenko/ai-core.git'"],
+        capture_output=True,
+        text=True,
+        env=base_env,
+    )
+    assert res.returncode != 0
+    assert "unexpected command" in res.stderr
+
+    # Лишний токен
+    res = subprocess.run(
+        [sys.executable, str(script), "git@github.com", "git-receive-pack 'kkobanenko/ai-core.git' extra"],
+        capture_output=True,
+        text=True,
+        env=base_env,
+    )
+    assert res.returncode != 0
+    assert "expected exactly 2 tokens" in res.stderr
+
+    # Некорректные кавычки (malformed quoting)
+    res = subprocess.run(
+        [sys.executable, str(script), "git@github.com", "git-receive-pack 'kkobanenko/ai-core.git"],
+        capture_output=True,
+        text=True,
+        env=base_env,
+    )
+    assert res.returncode != 0
+    assert "malformed quoting" in res.stderr
+
+    # Неверный хост
+    res = subprocess.run(
+        [sys.executable, str(script), "other@github.com", "git-receive-pack 'kkobanenko/ai-core.git'"],
+        capture_output=True,
+        text=True,
+        env=base_env,
+    )
+    assert res.returncode != 0
+    assert "unexpected invocation" in res.stderr
+
+    # Отсутствует FAKE_GIT_BARE_REPO
+    no_bare_env = dict(base_env)
+    del no_bare_env["FAKE_GIT_BARE_REPO"]
+    res = subprocess.run(
+        [sys.executable, str(script), "git@github.com", "git-receive-pack 'kkobanenko/ai-core.git'"],
+        capture_output=True,
+        text=True,
+        env=no_bare_env,
+    )
+    assert res.returncode != 0
+    assert "FAKE_GIT_BARE_REPO is not set" in res.stderr
+
+
 def test_dry_run_no_push_commands(tmp_path: Path) -> None:
     clone = tmp_path / "clone"
     clone.mkdir()
@@ -450,7 +612,11 @@ def test_forbidden_git_commands_rejected() -> None:
     with pytest.raises(ValueError, match="forbidden"):
         _assert_git_command_allowed(("reset", "--hard", "HEAD"))
     with pytest.raises(ValueError, match="forbidden"):
-        _assert_git_command_allowed(("push", "origin", "+refs/heads/x"))
+        _assert_git_command_allowed(("push", "--force", "origin", "refs/heads/x"))
+    with pytest.raises(ValueError, match="forbidden"):
+        _assert_git_command_allowed(("push", "-f", "origin", "refs/heads/x"))
+    with pytest.raises(ValueError, match="forbidden"):
+        _assert_git_command_allowed(("push", "--force-with-lease", "origin", "refs/heads/x"))
 
 
 def test_dirty_primary_checkout_preserved(
@@ -685,7 +851,9 @@ def test_real_git_integration_publish_and_idempotency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Non-dry-run: real git, fake SSH transport, canonical GitHub origin."""
+    assert os.environ.get("FAKE_SSH_VALIDATE_ONLY") is None
     bare, clone, base_sha, git_env, ssh_log = _init_local_github_clone(tmp_path)
+    assert "FAKE_SSH_VALIDATE_ONLY" not in git_env
     target_branch = "feat/integration-pkg"
     bridge_branch = "coord/bridge/integration-pkg"
 
