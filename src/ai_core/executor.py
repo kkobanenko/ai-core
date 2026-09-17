@@ -33,24 +33,28 @@ DEFAULT_CANDIDATES: tuple[RouteCandidate, ...] = (
     RouteCandidate(provider_id="mistral_external", model="mistral-small-latest"),
 )
 
+DEFAULT_GOVERNED_MODELS: frozenset[tuple[str, str]] = frozenset(
+    (c.provider_id, c.model) for c in DEFAULT_CANDIDATES
+)
+
 
 def _build_default_policy(
     candidates: tuple[RouteCandidate, ...],
     capability: ProviderCapability,
     request_egress_authorized: bool,
 ) -> RoutePolicy:
-    """Construct a RoutePolicy authorizing known canonical candidates and capability."""
-    authorized_providers = frozenset(
-        c.provider_id for c in candidates if c.provider_id in CANONICAL_PROVIDER_IDS
+    """Construct a RoutePolicy authorizing strictly default governed provider-model pairs."""
+    authorized_pairs = tuple(
+        c for c in candidates if (c.provider_id, c.model) in DEFAULT_GOVERNED_MODELS
     )
+    authorized_providers = frozenset(c.provider_id for c in authorized_pairs)
     capability_auths = frozenset(
         CapabilityAuthorization(
             provider_id=c.provider_id,
             model=c.model,
             capability=capability,
         )
-        for c in candidates
-        if c.provider_id in CANONICAL_PROVIDER_IDS
+        for c in authorized_pairs
     )
     return RoutePolicy(
         authorized_provider_ids=authorized_providers,

@@ -21,6 +21,7 @@ from typing import Any, Protocol
 
 from ai_core.errors import (
     AiErrorKind,
+    EgressNotAuthorizedError,
     ErrorDescriptor,
     classify_provider_error,
 )
@@ -29,11 +30,27 @@ from ai_core.health import (
     ProviderHealthStore,
 )
 from ai_core.provider_catalog import (
+    NetworkBoundary,
     UnknownProviderIdentityError,
     get_provider_identity,
 )
 from ai_core.routing import RouteCandidate
 from ai_core.tracing import record_llm_result, start_llm_span
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Fail-closed HTTP redirect handler preventing credential leakage across hops."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        return None
 
 
 @dataclass(frozen=True)
@@ -47,6 +64,7 @@ class TransportRequest:
     endpoint: str | None = None
     api_key: str | None = None
     extra_options: Mapping[str, Any] = field(default_factory=dict)
+    request_egress_authorized: bool = False
 
 
 @dataclass(frozen=True)
@@ -133,7 +151,8 @@ class OllamaTransport:
         )
 
         try:
-            with urllib.request.urlopen(
+            opener = urllib.request.build_opener(NoRedirectHandler)
+            with opener.open(
                 http_req,
                 timeout=request.timeout_seconds,
             ) as response:
@@ -198,13 +217,19 @@ class MistralTransport:
 
         api_key = request.api_key or os.environ.get("MISTRAL_API_KEY", "")
 
-        payload: dict[str, Any] = {
-            "model": request.candidate.model,
-            "messages": [dict(m) for m in request.messages],
-            "temperature": request.temperature,
-        }
+        payload: dict[str, Any] = {}
         if request.extra_options:
-            payload.update(dict(request.extra_options))
+            # Prevent extra_options from hijacking governing model or messages
+            payload.update(
+                {
+                    k: v
+                    for k, v in request.extra_options.items()
+                    if k not in ("model", "messages")
+                }
+            )
+        payload["model"] = request.candidate.model
+        payload["messages"] = [dict(m) for m in request.messages]
+        payload["temperature"] = request.temperature
 
         headers: dict[str, str] = {
             "Content-Type": "application/json",
@@ -222,7 +247,8 @@ class MistralTransport:
         )
 
         try:
-            with urllib.request.urlopen(
+            opener = urllib.request.build_opener(NoRedirectHandler)
+            with opener.open(
                 http_req,
                 timeout=request.timeout_seconds,
             ) as response:
@@ -346,6 +372,16 @@ def execute_transport_attempt(
     health_store: ProviderHealthStore | None = None,
 ) -> TransportAttemptResult:
     """Execute strictly one attempt against the candidate, recording health observations."""
+    identity = get_provider_identity(request.candidate.provider_id)
+    if (
+        identity.network_boundary is not NetworkBoundary.LOCAL_SAME_HOST
+        and not request.request_egress_authorized
+    ):
+        raise EgressNotAuthorizedError(
+            f"External network egress not authorized for provider '{request.candidate.provider_id}' "
+            f"on boundary {identity.network_boundary.value}"
+        )
+
     resolved_transport = transport or get_transport_for_candidate(request.candidate)
 
     # Extract prompts from messages for tracing (soft-fail: default to empty).

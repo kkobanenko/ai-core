@@ -38,6 +38,10 @@ class NoEligibleProviderError(AiCoreRoutingError):
     """No candidate survived the explicit planning gates."""
 
 
+class EgressNotAuthorizedError(AiCoreRoutingError, PermissionError):
+    """Raised when transport attempt targets non-local network without explicit egress authorization."""
+
+
 class RequestDeadlineExceededError(AiCoreRoutingError, TimeoutError):
     """Shared request deadline leaves no safe attempt budget."""
 
