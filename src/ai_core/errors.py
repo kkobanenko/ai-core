@@ -42,6 +42,19 @@ class RequestDeadlineExceededError(AiCoreRoutingError, TimeoutError):
     """Shared request deadline leaves no safe attempt budget."""
 
 
+class AllCandidatesExhaustedError(AiCoreRoutingError):
+    """Raised when all planned candidates have failed during multi-candidate execution."""
+
+    def __init__(
+        self,
+        message: str = "All eligible provider candidates failed during execution",
+        *,
+        attempts: tuple[object, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.attempts = attempts
+
+
 def _status_code(error: BaseException) -> int | None:
     for attr in ("status_code", "code", "status"):
         status = getattr(error, attr, None)
@@ -180,6 +193,7 @@ def classify_provider_error(error: BaseException) -> ErrorDescriptor:
 __all__ = [
     "AiCoreRoutingError",
     "AiErrorKind",
+    "AllCandidatesExhaustedError",
     "ErrorDescriptor",
     "NoEligibleProviderError",
     "RequestDeadlineExceededError",
