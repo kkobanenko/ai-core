@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-core"
-version = "0.1.0"
-description = "Shared Phoenix tracing config and IO policy for multi-project AI observability"
+version = "0.3.1"
+description = "Shared Phoenix tracing config, IO policy, and multi-provider bounded runtime for AI projects"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

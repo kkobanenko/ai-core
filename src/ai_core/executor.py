@@ -13,6 +13,7 @@ from typing import Any
 from ai_core.capabilities import ProviderCapability
 from ai_core.health import ProviderHealthStore
 from ai_core.privacy import DataClass, OutboundForm
+from ai_core.provider_catalog import CANONICAL_PROVIDER_IDS
 from ai_core.routing import (
     CapabilityAuthorization,
     PrivacyAwareRouter,
@@ -38,8 +39,10 @@ def _build_default_policy(
     capability: ProviderCapability,
     request_egress_authorized: bool,
 ) -> RoutePolicy:
-    """Construct a RoutePolicy authorizing the specified candidates and capability."""
-    authorized_providers = frozenset(c.provider_id for c in candidates)
+    """Construct a RoutePolicy authorizing known canonical candidates and capability."""
+    authorized_providers = frozenset(
+        c.provider_id for c in candidates if c.provider_id in CANONICAL_PROVIDER_IDS
+    )
     capability_auths = frozenset(
         CapabilityAuthorization(
             provider_id=c.provider_id,
@@ -47,6 +50,7 @@ def _build_default_policy(
             capability=capability,
         )
         for c in candidates
+        if c.provider_id in CANONICAL_PROVIDER_IDS
     )
     return RoutePolicy(
         authorized_provider_ids=authorized_providers,
@@ -96,8 +100,14 @@ def execute_chat(
         AllCandidatesExhaustedError: If all eligible candidates failed during execution.
         RequestDeadlineExceededError: If shared time budget expires.
     """
-    resolved_candidates = tuple(candidates or DEFAULT_CANDIDATES)
-    resolved_health_store = health_store or ProviderHealthStore()
+    resolved_candidates = (
+        tuple(candidates) if candidates is not None else DEFAULT_CANDIDATES
+    )
+    resolved_health_store = (
+        health_store
+        or (runtime.health_store if runtime is not None else None)
+        or ProviderHealthStore()
+    )
     resolved_policy = policy or _build_default_policy(
         candidates=resolved_candidates,
         capability=capability,

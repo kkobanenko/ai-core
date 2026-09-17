@@ -315,8 +315,23 @@ def get_transport_for_candidate(
     # Ensure candidate provider is valid in catalog
     get_provider_identity(candidate.provider_id)
 
-    if candidate.provider_id in ("vm100_local_ollama", "gpu_ollama", "ollama_cloud"):
-        return OllamaTransport(default_endpoint=default_ollama_endpoint)
+    if candidate.provider_id == "vm100_local_ollama":
+        endpoint = default_ollama_endpoint or os.environ.get(
+            "AI_CORE_VM100_OLLAMA_ENDPOINT", OllamaTransport.DEFAULT_ENDPOINT
+        )
+        return OllamaTransport(default_endpoint=endpoint)
+
+    if candidate.provider_id == "gpu_ollama":
+        endpoint = default_ollama_endpoint or os.environ.get(
+            "AI_CORE_GPU_OLLAMA_ENDPOINT", "http://127.0.0.1:11435"
+        )
+        return OllamaTransport(default_endpoint=endpoint)
+
+    if candidate.provider_id == "ollama_cloud":
+        endpoint = default_ollama_endpoint or os.environ.get(
+            "AI_CORE_OLLAMA_CLOUD_ENDPOINT", "https://api.ollama.com"
+        )
+        return OllamaTransport(default_endpoint=endpoint)
 
     if candidate.provider_id == "mistral_external":
         return MistralTransport(default_endpoint=default_mistral_endpoint)

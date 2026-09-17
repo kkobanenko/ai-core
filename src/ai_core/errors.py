@@ -41,6 +41,15 @@ class NoEligibleProviderError(AiCoreRoutingError):
 class RequestDeadlineExceededError(AiCoreRoutingError, TimeoutError):
     """Shared request deadline leaves no safe attempt budget."""
 
+    def __init__(
+        self,
+        message: str = "Shared request deadline leaves no safe attempt budget",
+        *,
+        attempts: tuple[object, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.attempts = attempts
+
 
 class AllCandidatesExhaustedError(AiCoreRoutingError):
     """Raised when all planned candidates have failed during multi-candidate execution."""
@@ -53,6 +62,10 @@ class AllCandidatesExhaustedError(AiCoreRoutingError):
     ) -> None:
         super().__init__(message)
         self.attempts = attempts
+
+    @property
+    def is_deadline_exceeded(self) -> bool:
+        return isinstance(self.__cause__, RequestDeadlineExceededError)
 
 
 def _status_code(error: BaseException) -> int | None:
@@ -118,8 +131,8 @@ def classify_provider_error(error: BaseException) -> ErrorDescriptor:
             AiErrorKind.NOT_FOUND,
             status,
             False,
-            False,
             True,
+            False,
         )
 
     if status is not None and 500 <= status <= 599:

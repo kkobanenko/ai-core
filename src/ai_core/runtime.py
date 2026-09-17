@@ -112,13 +112,14 @@ class SingleLoopRuntime:
                     now_monotonic=now,
                     configured_timeout_seconds=request.total_timeout_seconds,
                     future_attempts=remaining_after_this,
+                    reserve_per_future_attempt_seconds=active_budget.min_attempt_seconds,
                 )
-            except RequestDeadlineExceededError:
+            except RequestDeadlineExceededError as exc:
                 if attempts:
                     raise AllCandidatesExhaustedError(
                         "Shared request deadline exceeded after failed attempts",
                         attempts=tuple(attempts),
-                    )
+                    ) from exc
                 raise
 
             transport_req = TransportRequest(

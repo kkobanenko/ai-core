@@ -180,7 +180,7 @@ def test_mistral_transport_success(mock_server) -> None:
         (401, AiErrorKind.AUTH, True, False),
         (403, AiErrorKind.AUTH, True, False),
         (400, AiErrorKind.BAD_REQUEST, True, False),
-        (404, AiErrorKind.NOT_FOUND, True, False),
+        (404, AiErrorKind.NOT_FOUND, False, True),
         (500, AiErrorKind.SERVER, False, True),
         (502, AiErrorKind.SERVER, False, True),
         (503, AiErrorKind.SERVER, False, True),
