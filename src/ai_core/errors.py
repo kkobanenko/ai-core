@@ -43,17 +43,20 @@ class RequestDeadlineExceededError(AiCoreRoutingError, TimeoutError):
 
 
 def _status_code(error: BaseException) -> int | None:
-    status = getattr(error, "status_code", None)
-    if isinstance(status, int):
-        return status
+    for attr in ("status_code", "code", "status"):
+        status = getattr(error, attr, None)
+        if isinstance(status, int):
+            return status
 
     response = getattr(error, "response", None)
-    response_status = (
-        getattr(response, "status_code", None)
-        if response is not None
-        else None
-    )
-    return response_status if isinstance(response_status, int) else None
+    if response is not None:
+        for attr in ("status_code", "status", "code"):
+            response_status = getattr(response, attr, None)
+            if isinstance(response_status, int):
+                return response_status
+
+    return None
+
 
 
 def classify_provider_error(error: BaseException) -> ErrorDescriptor:
