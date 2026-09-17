@@ -33,6 +33,7 @@ from ai_core.provider_catalog import (
     get_provider_identity,
 )
 from ai_core.routing import RouteCandidate
+from ai_core.tracing import record_llm_result, start_llm_span
 
 
 @dataclass(frozen=True)
@@ -331,7 +332,45 @@ def execute_transport_attempt(
 ) -> TransportAttemptResult:
     """Execute strictly one attempt against the candidate, recording health observations."""
     resolved_transport = transport or get_transport_for_candidate(request.candidate)
-    result = resolved_transport.send_attempt(request)
+
+    # Extract prompts from messages for tracing (soft-fail: default to empty).
+    system_prompt = ""
+    user_prompt = ""
+    for msg in request.messages:
+        role = msg.get("role", "")
+        if role == "system" and not system_prompt:
+            system_prompt = msg.get("content", "")
+        elif role == "user" and not user_prompt:
+            user_prompt = msg.get("content", "")
+
+    with start_llm_span(
+        workflow=f"transport.{request.candidate.provider_id}",
+        attributes={
+            "provider_id": request.candidate.provider_id,
+            "model": request.candidate.model,
+            "timeout_seconds": request.timeout_seconds,
+            "temperature": request.temperature,
+        },
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+    ) as span:
+        result = resolved_transport.send_attempt(request)
+
+        # Record outcome into the span (soft-fail via record_llm_result internals).
+        if result.ok:
+            record_llm_result(
+                span,
+                status="ok",
+                response_text=result.response.content if result.response else "",
+                latency_ms=int(result.latency_seconds * 1000),
+            )
+        else:
+            record_llm_result(
+                span,
+                status="error",
+                latency_ms=int(result.latency_seconds * 1000),
+                error_type=result.error.kind.value if result.error else "unknown",
+            )
 
     if health_store is not None:
         if result.ok:
