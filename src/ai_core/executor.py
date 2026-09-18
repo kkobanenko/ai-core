@@ -37,15 +37,26 @@ DEFAULT_GOVERNED_MODELS: frozenset[tuple[str, str]] = frozenset(
     (c.provider_id, c.model) for c in DEFAULT_CANDIDATES
 )
 
+DEFAULT_GOVERNED_CAPABILITIES: frozenset[tuple[str, str, ProviderCapability]] = frozenset({
+    ("vm100_local_ollama", "qwen3:8b", ProviderCapability.TEXT),
+    ("vm100_local_ollama", "qwen3:8b", ProviderCapability.STRUCTURED_JSON),
+    ("gpu_ollama", "qwen3:8b", ProviderCapability.TEXT),
+    ("gpu_ollama", "qwen3:8b", ProviderCapability.STRUCTURED_JSON),
+    ("mistral_external", "mistral-small-latest", ProviderCapability.TEXT),
+    ("mistral_external", "mistral-small-latest", ProviderCapability.STRUCTURED_JSON),
+})
+
 
 def _build_default_policy(
     candidates: tuple[RouteCandidate, ...],
     capability: ProviderCapability,
     request_egress_authorized: bool,
 ) -> RoutePolicy:
-    """Construct a RoutePolicy authorizing strictly default governed provider-model pairs."""
+    """Construct a RoutePolicy authorizing strictly default governed provider-model pairs and capabilities."""
     authorized_pairs = tuple(
-        c for c in candidates if (c.provider_id, c.model) in DEFAULT_GOVERNED_MODELS
+        c
+        for c in candidates
+        if (c.provider_id, c.model, capability) in DEFAULT_GOVERNED_CAPABILITIES
     )
     authorized_providers = frozenset(c.provider_id for c in authorized_pairs)
     capability_auths = frozenset(
@@ -104,6 +115,13 @@ def execute_chat(
         AllCandidatesExhaustedError: If all eligible candidates failed during execution.
         RequestDeadlineExceededError: If shared time budget expires.
     """
+    if runtime is not None and health_store is not None:
+        if runtime.health_store is not health_store:
+            raise ValueError(
+                "Conflicting health_store instances: provided health_store "
+                "differs from runtime.health_store"
+            )
+
     resolved_candidates = (
         tuple(candidates) if candidates is not None else DEFAULT_CANDIDATES
     )
@@ -167,6 +185,8 @@ def execute_prompt(
 
 __all__ = [
     "DEFAULT_CANDIDATES",
+    "DEFAULT_GOVERNED_CAPABILITIES",
+    "DEFAULT_GOVERNED_MODELS",
     "execute_chat",
     "execute_prompt",
 ]

@@ -328,3 +328,55 @@ def test_11_no_redirect_handler_denies_redirects() -> None:
     req = urllib.request.Request("http://example.com")
     result = handler.redirect_request(req, None, 302, "Found", {}, "http://example.com/other")
     assert result is None
+
+
+def test_12_endpoint_egress_bypass_prevented() -> None:
+    """Security P1: Local provider candidate with remote endpoint override requires egress authorization."""
+    cand = RouteCandidate(provider_id="vm100_local_ollama", model="qwen3:8b")
+    # Endpoint points to external host, but request_egress_authorized is False
+    req = TransportRequest(
+        candidate=cand,
+        messages=({"role": "user", "content": "hello"},),
+        endpoint="https://remote-attacker-ollama.example.com/api/chat",
+        request_egress_authorized=False,
+    )
+    with pytest.raises(EgressNotAuthorizedError) as exc_info:
+        execute_transport_attempt(req)
+    assert "requires egress authorization" in str(exc_info.value)
+
+
+def test_13_conflicting_health_store_instances_rejected() -> None:
+    """P2: execute_chat rejects conflicting health_store instances between argument and runtime."""
+    store_a = ProviderHealthStore()
+    store_b = ProviderHealthStore()
+    mock_transport = MagicMock(spec=ProviderTransport)
+    custom_runtime = SingleLoopRuntime(
+        health_store=store_a,
+        transport=mock_transport,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        execute_chat(
+            messages=[{"role": "user", "content": "ping"}],
+            runtime=custom_runtime,
+            health_store=store_b,
+        )
+    assert "Conflicting health_store instances" in str(exc_info.value)
+
+
+def test_14_uncataloged_capability_not_authorized_in_default_policy() -> None:
+    """P2: _build_default_policy restricts capability authorizations to governed model capabilities."""
+    # qwen3:8b does NOT support VISION_IMAGE or OCR_PDF in default governed catalog
+    policy = _build_default_policy(
+        candidates=DEFAULT_CANDIDATES,
+        capability=ProviderCapability.VISION_IMAGE,
+        request_egress_authorized=True,
+    )
+    assert len(policy.capability_authorizations) == 0
+
+    # execute_chat with uncataloged capability fails-closed at router planning phase
+    with pytest.raises(NoEligibleProviderError):
+        execute_chat(
+            messages=[{"role": "user", "content": "analyze image"}],
+            capability=ProviderCapability.VISION_IMAGE,
+        )

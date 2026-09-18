@@ -14,6 +14,7 @@ import os
 import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -365,6 +366,18 @@ def get_transport_for_candidate(
     raise UnknownProviderIdentityError(candidate.provider_id)
 
 
+def is_local_loopback_endpoint(endpoint: Any) -> bool:
+    """Return True if endpoint strictly targets a local loopback interface."""
+    if not endpoint or not isinstance(endpoint, str):
+        return True
+    try:
+        parsed = urllib.parse.urlparse(endpoint)
+        hostname = (parsed.hostname or "").lower().strip()
+        return hostname in ("127.0.0.1", "localhost", "::1", "0.0.0.0")
+    except Exception:
+        return False
+
+
 def execute_transport_attempt(
     request: TransportRequest,
     *,
@@ -372,17 +385,20 @@ def execute_transport_attempt(
     health_store: ProviderHealthStore | None = None,
 ) -> TransportAttemptResult:
     """Execute strictly one attempt against the candidate, recording health observations."""
+    resolved_transport = transport or get_transport_for_candidate(request.candidate)
+    raw_endpoint = request.endpoint or getattr(resolved_transport, "_default_endpoint", None)
+    target_endpoint = raw_endpoint if isinstance(raw_endpoint, str) else None
+
     identity = get_provider_identity(request.candidate.provider_id)
-    if (
+    requires_egress = (
         identity.network_boundary is not NetworkBoundary.LOCAL_SAME_HOST
-        and not request.request_egress_authorized
-    ):
+        or not is_local_loopback_endpoint(target_endpoint)
+    )
+    if requires_egress and not request.request_egress_authorized:
         raise EgressNotAuthorizedError(
             f"External network egress not authorized for provider '{request.candidate.provider_id}' "
-            f"on boundary {identity.network_boundary.value}"
+            f"(target endpoint '{target_endpoint}' requires egress authorization)"
         )
-
-    resolved_transport = transport or get_transport_for_candidate(request.candidate)
 
     # Extract prompts from messages for tracing (soft-fail: default to empty).
     system_prompt = ""
