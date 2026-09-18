@@ -74,6 +74,27 @@ def _build_default_policy(
     )
 
 
+def _resolve_request_egress_authorized(
+    *,
+    request_egress_authorized: bool,
+    policy: RoutePolicy | None,
+    resolved_policy: RoutePolicy,
+) -> bool:
+    """Reconcile function argument with custom RoutePolicy egress authorization."""
+    policy_authorized = resolved_policy.request_egress_authorized is True
+    arg_authorized = request_egress_authorized is True
+
+    if policy is not None:
+        if arg_authorized and not policy_authorized:
+            raise ValueError(
+                "Contradictory egress authorization: request_egress_authorized=True "
+                "but custom RoutePolicy.request_egress_authorized is not True"
+            )
+        return policy_authorized or arg_authorized
+
+    return arg_authorized
+
+
 def execute_chat(
     messages: Sequence[Mapping[str, str]],
     *,
@@ -135,6 +156,11 @@ def execute_chat(
         capability=capability,
         request_egress_authorized=request_egress_authorized,
     )
+    effective_egress = _resolve_request_egress_authorized(
+        request_egress_authorized=request_egress_authorized,
+        policy=policy,
+        resolved_policy=resolved_policy,
+    )
 
     router = PrivacyAwareRouter(health_store=resolved_health_store)
     plan = router.plan(
@@ -155,7 +181,7 @@ def execute_chat(
         total_timeout_seconds=total_timeout_seconds,
         temperature=temperature,
         extra_options=extra_options or {},
-        request_egress_authorized=request_egress_authorized,
+        request_egress_authorized=effective_egress,
     )
 
     exec_runtime = runtime or SingleLoopRuntime(

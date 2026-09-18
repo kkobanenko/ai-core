@@ -30,7 +30,13 @@ from ai_core.executor import (
 )
 from ai_core.health import ProviderHealthStatus, ProviderHealthStore
 from ai_core.privacy import DataClass, OutboundForm
-from ai_core.routing import PrivacyAwareRouter, RouteCandidate, RoutePlan
+from ai_core.routing import (
+    CapabilityAuthorization,
+    PrivacyAwareRouter,
+    RouteCandidate,
+    RoutePlan,
+    RoutePolicy,
+)
 from ai_core.runtime import (
     ExecutionRequest,
     ExecutionResult,
@@ -380,3 +386,70 @@ def test_14_uncataloged_capability_not_authorized_in_default_policy() -> None:
             messages=[{"role": "user", "content": "analyze image"}],
             capability=ProviderCapability.VISION_IMAGE,
         )
+
+
+def test_15_truthy_non_boolean_egress_rejected_at_transport_boundary() -> None:
+    """Review P1: truthy non-booleans must not authorize external transport egress."""
+    gpu_cand = RouteCandidate(provider_id="gpu_ollama", model="qwen3:8b")
+    req = TransportRequest(
+        candidate=gpu_cand,
+        messages=({"role": "user", "content": "hi"},),
+        request_egress_authorized="true",  # type: ignore[arg-type]
+    )
+    with pytest.raises(EgressNotAuthorizedError):
+        execute_transport_attempt(req)
+
+
+def test_16_custom_policy_egress_true_with_default_arg_executes() -> None:
+    """Review P2: custom RoutePolicy egress authorization must propagate to transport."""
+    external_cand = RouteCandidate(provider_id="mistral_external", model="mistral-small-latest")
+    custom_policy = RoutePolicy(
+        authorized_provider_ids=frozenset({"mistral_external"}),
+        capability_authorizations=frozenset({
+            CapabilityAuthorization(
+                provider_id="mistral_external",
+                model="mistral-small-latest",
+                capability=ProviderCapability.TEXT,
+            )
+        }),
+        request_egress_authorized=True,
+    )
+
+    mock_transport = MagicMock(spec=ProviderTransport)
+    mock_transport.send_attempt.return_value = _mock_success(external_cand, "policy egress ok")
+
+    result = execute_chat(
+        messages=[{"role": "user", "content": "hello"}],
+        candidates=(external_cand,),
+        policy=custom_policy,
+        transport=mock_transport,
+    )
+    assert result.content == "policy egress ok"
+    assert mock_transport.send_attempt.call_count == 1
+
+
+def test_17_short_deadline_still_attempts_primary_candidate() -> None:
+    """Review P1: fallback reservation must not exhaust short shared deadlines before primary."""
+    cand_local = RouteCandidate(provider_id="vm100_local_ollama", model="qwen3:8b")
+    cand_gpu = RouteCandidate(provider_id="gpu_ollama", model="qwen3:8b")
+    cand_mistral = RouteCandidate(provider_id="mistral_external", model="mistral-small-latest")
+
+    mock_transport = MagicMock(spec=ProviderTransport)
+    mock_transport.send_attempt.return_value = _mock_success(cand_local, "primary ok")
+
+    runtime = SingleLoopRuntime(transport=mock_transport)
+    plan = RoutePlan(
+        eligible=(cand_local, cand_gpu, cand_mistral),
+        rejected=(),
+    )
+    req = ExecutionRequest(
+        messages=({"role": "user", "content": "hi"},),
+        candidates=(cand_local, cand_gpu, cand_mistral),
+        total_timeout_seconds=2.1,
+        request_egress_authorized=True,
+    )
+
+    result = runtime.execute_plan(plan, req)
+    assert result.winner == cand_local
+    assert result.content == "primary ok"
+    assert mock_transport.send_attempt.call_count == 1

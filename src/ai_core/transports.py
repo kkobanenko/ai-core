@@ -394,7 +394,7 @@ def execute_transport_attempt(
         identity.network_boundary is not NetworkBoundary.LOCAL_SAME_HOST
         or not is_local_loopback_endpoint(target_endpoint)
     )
-    if requires_egress and not request.request_egress_authorized:
+    if requires_egress and request.request_egress_authorized is not True:
         raise EgressNotAuthorizedError(
             f"External network egress not authorized for provider '{request.candidate.provider_id}' "
             f"(target endpoint '{target_endpoint}' requires egress authorization)"

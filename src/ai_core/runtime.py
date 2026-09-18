@@ -111,7 +111,9 @@ class SingleLoopRuntime:
                 if isinstance(getattr(active_budget, "min_attempt_seconds", None), (int, float))
                 else 0.1
             )
-            reserve_per_future = max(min_attempt, 1.0)
+            # Reserve only the minimum attempt slice for future candidates so
+            # short shared deadlines are not exhausted before the primary attempt.
+            reserve_per_future = min_attempt
 
             try:
                 attempt_timeout = active_budget.timeout_for_attempt(
