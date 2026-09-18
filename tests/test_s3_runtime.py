@@ -34,12 +34,14 @@ CANDIDATE_3 = RouteCandidate(provider_id="mistral_external", model="mistral-smal
 def _make_request(
     candidates: tuple[RouteCandidate, ...] = (CANDIDATE_1, CANDIDATE_2),
     total_timeout_seconds: float = 30.0,
+    request_egress_authorized: bool = True,
 ) -> ExecutionRequest:
     return ExecutionRequest(
         messages=({"role": "user", "content": "test prompt"},),
         candidates=candidates,
         capability=ProviderCapability.TEXT,
         total_timeout_seconds=total_timeout_seconds,
+        request_egress_authorized=request_egress_authorized,
     )
 
 
@@ -184,7 +186,7 @@ class TestSingleLoopRuntime:
         plan = RoutePlan(eligible=(CANDIDATE_1, CANDIDATE_2), rejected=())
         request = _make_request()
 
-        with pytest.raises(AllCandidatesExhaustedError, match="Shared request deadline exceeded") as exc_info:
+        with pytest.raises(RequestDeadlineExceededError, match="Shared request deadline exceeded") as exc_info:
             runtime.execute_plan(plan, request, budget=mock_budget)
 
         assert len(exc_info.value.attempts) == 1

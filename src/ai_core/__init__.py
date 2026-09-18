@@ -1,5 +1,7 @@
 """Общая библиотека Phoenix tracing и IO-политики для AI-проектов."""
 
+__version__ = "0.3.1"
+
 from ai_core.attributes import AttributeValue, sanitize_attributes
 from ai_core.config import PhoenixConfig, load_phoenix_config
 from ai_core.io_policy import maybe_truncate

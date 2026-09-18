@@ -78,3 +78,36 @@ PHOENIX_ENABLED=true PHOENIX_PROJECT_NAME=smoke python examples/smoke_span.py
 ```
 
 Span должен появиться в Phoenix UI (через SSH tunnel на `127.0.0.1:6006`).
+
+---
+
+## Высокоуровневый Runtime & Executor (v0.3+)
+
+Начиная с `v0.3.0` (и hardening в `v0.3.1`), `ai-core` предоставляет детерминированный single-loop runtime и высокоуровневый фасад `execute_chat` / `execute_prompt`:
+
+> [!IMPORTANT]
+> Для задействования полного каскада (включающего `gpu_ollama` на `UNKNOWN_BOUNDARY` и `mistral_external` на `EXTERNAL`) требуется флаг явного согласия на сетевой egress: `request_egress_authorized=True`. При `request_egress_authorized=False` доступен строго локальный узел `vm100_local_ollama`.
+
+```python
+from ai_core.executor import execute_chat, execute_prompt
+from ai_core.routing import RouteCandidate
+
+# 1. Быстрый вызов промпта с разрешением полного каскада (vm100 -> gpu -> mistral):
+result = execute_prompt(
+    "Привет! Расскажи о статусе системы.",
+    request_egress_authorized=True,
+)
+print(result.content)
+print(f"Winner: {result.winner.provider_id}, Fallback occurred: {result.fallback_occurred}")
+
+# 2. Вызов чата со строгим контролем кандидатов и дедлайна:
+result = execute_chat(
+    messages=[{"role": "user", "content": "Классифицируй входящий документ"}],
+    candidates=[
+        RouteCandidate(provider_id="vm100_local_ollama", model="qwen3:8b"),
+        RouteCandidate(provider_id="gpu_ollama", model="qwen3:8b"),
+    ],
+    total_timeout_seconds=15.0,
+    request_egress_authorized=True,
+)
+```

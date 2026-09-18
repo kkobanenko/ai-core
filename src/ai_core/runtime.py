@@ -106,20 +106,27 @@ class SingleLoopRuntime:
         for index, candidate in enumerate(eligible_candidates):
             now = time.monotonic()
             remaining_after_this = total_candidates - index - 1
+            min_attempt = (
+                active_budget.min_attempt_seconds
+                if isinstance(getattr(active_budget, "min_attempt_seconds", None), (int, float))
+                else 0.1
+            )
+            # Reserve only the minimum attempt slice for future candidates so
+            # short shared deadlines are not exhausted before the primary attempt.
+            reserve_per_future = min_attempt
 
             try:
                 attempt_timeout = active_budget.timeout_for_attempt(
                     now_monotonic=now,
                     configured_timeout_seconds=request.total_timeout_seconds,
                     future_attempts=remaining_after_this,
+                    reserve_per_future_attempt_seconds=reserve_per_future,
                 )
-            except RequestDeadlineExceededError:
-                if attempts:
-                    raise AllCandidatesExhaustedError(
-                        "Shared request deadline exceeded after failed attempts",
-                        attempts=tuple(attempts),
-                    )
-                raise
+            except RequestDeadlineExceededError as exc:
+                raise RequestDeadlineExceededError(
+                    "Shared request deadline exceeded after failed attempts" if attempts else str(exc),
+                    attempts=tuple(attempts),
+                ) from exc
 
             transport_req = TransportRequest(
                 candidate=candidate,
@@ -127,6 +134,7 @@ class SingleLoopRuntime:
                 temperature=request.temperature,
                 timeout_seconds=attempt_timeout,
                 extra_options=request.extra_options,
+                request_egress_authorized=request.request_egress_authorized,
             )
 
             result = execute_transport_attempt(

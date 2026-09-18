@@ -14,6 +14,7 @@ import os
 import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ from typing import Any, Protocol
 
 from ai_core.errors import (
     AiErrorKind,
+    EgressNotAuthorizedError,
     ErrorDescriptor,
     classify_provider_error,
 )
@@ -29,11 +31,27 @@ from ai_core.health import (
     ProviderHealthStore,
 )
 from ai_core.provider_catalog import (
+    NetworkBoundary,
     UnknownProviderIdentityError,
     get_provider_identity,
 )
 from ai_core.routing import RouteCandidate
 from ai_core.tracing import record_llm_result, start_llm_span
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Fail-closed HTTP redirect handler preventing credential leakage across hops."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        return None
 
 
 @dataclass(frozen=True)
@@ -47,6 +65,7 @@ class TransportRequest:
     endpoint: str | None = None
     api_key: str | None = None
     extra_options: Mapping[str, Any] = field(default_factory=dict)
+    request_egress_authorized: bool = False
 
 
 @dataclass(frozen=True)
@@ -133,7 +152,8 @@ class OllamaTransport:
         )
 
         try:
-            with urllib.request.urlopen(
+            opener = urllib.request.build_opener(NoRedirectHandler)
+            with opener.open(
                 http_req,
                 timeout=request.timeout_seconds,
             ) as response:
@@ -198,13 +218,19 @@ class MistralTransport:
 
         api_key = request.api_key or os.environ.get("MISTRAL_API_KEY", "")
 
-        payload: dict[str, Any] = {
-            "model": request.candidate.model,
-            "messages": [dict(m) for m in request.messages],
-            "temperature": request.temperature,
-        }
+        payload: dict[str, Any] = {}
         if request.extra_options:
-            payload.update(dict(request.extra_options))
+            # Prevent extra_options from hijacking governing model or messages
+            payload.update(
+                {
+                    k: v
+                    for k, v in request.extra_options.items()
+                    if k not in ("model", "messages")
+                }
+            )
+        payload["model"] = request.candidate.model
+        payload["messages"] = [dict(m) for m in request.messages]
+        payload["temperature"] = request.temperature
 
         headers: dict[str, str] = {
             "Content-Type": "application/json",
@@ -222,7 +248,8 @@ class MistralTransport:
         )
 
         try:
-            with urllib.request.urlopen(
+            opener = urllib.request.build_opener(NoRedirectHandler)
+            with opener.open(
                 http_req,
                 timeout=request.timeout_seconds,
             ) as response:
@@ -315,13 +342,40 @@ def get_transport_for_candidate(
     # Ensure candidate provider is valid in catalog
     get_provider_identity(candidate.provider_id)
 
-    if candidate.provider_id in ("vm100_local_ollama", "gpu_ollama", "ollama_cloud"):
-        return OllamaTransport(default_endpoint=default_ollama_endpoint)
+    if candidate.provider_id == "vm100_local_ollama":
+        endpoint = default_ollama_endpoint or os.environ.get(
+            "AI_CORE_VM100_OLLAMA_ENDPOINT", OllamaTransport.DEFAULT_ENDPOINT
+        )
+        return OllamaTransport(default_endpoint=endpoint)
+
+    if candidate.provider_id == "gpu_ollama":
+        endpoint = default_ollama_endpoint or os.environ.get(
+            "AI_CORE_GPU_OLLAMA_ENDPOINT", "http://127.0.0.1:11435"
+        )
+        return OllamaTransport(default_endpoint=endpoint)
+
+    if candidate.provider_id == "ollama_cloud":
+        endpoint = default_ollama_endpoint or os.environ.get(
+            "AI_CORE_OLLAMA_CLOUD_ENDPOINT", "https://api.ollama.com"
+        )
+        return OllamaTransport(default_endpoint=endpoint)
 
     if candidate.provider_id == "mistral_external":
         return MistralTransport(default_endpoint=default_mistral_endpoint)
 
     raise UnknownProviderIdentityError(candidate.provider_id)
+
+
+def is_local_loopback_endpoint(endpoint: Any) -> bool:
+    """Return True if endpoint strictly targets a local loopback interface."""
+    if not endpoint or not isinstance(endpoint, str):
+        return True
+    try:
+        parsed = urllib.parse.urlparse(endpoint)
+        hostname = (parsed.hostname or "").lower().strip()
+        return hostname in ("127.0.0.1", "localhost", "::1", "0.0.0.0")
+    except Exception:
+        return False
 
 
 def execute_transport_attempt(
@@ -332,6 +386,19 @@ def execute_transport_attempt(
 ) -> TransportAttemptResult:
     """Execute strictly one attempt against the candidate, recording health observations."""
     resolved_transport = transport or get_transport_for_candidate(request.candidate)
+    raw_endpoint = request.endpoint or getattr(resolved_transport, "_default_endpoint", None)
+    target_endpoint = raw_endpoint if isinstance(raw_endpoint, str) else None
+
+    identity = get_provider_identity(request.candidate.provider_id)
+    requires_egress = (
+        identity.network_boundary is not NetworkBoundary.LOCAL_SAME_HOST
+        or not is_local_loopback_endpoint(target_endpoint)
+    )
+    if requires_egress and request.request_egress_authorized is not True:
+        raise EgressNotAuthorizedError(
+            f"External network egress not authorized for provider '{request.candidate.provider_id}' "
+            f"(target endpoint '{target_endpoint}' requires egress authorization)"
+        )
 
     # Extract prompts from messages for tracing (soft-fail: default to empty).
     system_prompt = ""

@@ -13,6 +13,7 @@ from typing import Any
 from ai_core.capabilities import ProviderCapability
 from ai_core.health import ProviderHealthStore
 from ai_core.privacy import DataClass, OutboundForm
+from ai_core.provider_catalog import CANONICAL_PROVIDER_IDS
 from ai_core.routing import (
     CapabilityAuthorization,
     PrivacyAwareRouter,
@@ -32,27 +33,66 @@ DEFAULT_CANDIDATES: tuple[RouteCandidate, ...] = (
     RouteCandidate(provider_id="mistral_external", model="mistral-small-latest"),
 )
 
+DEFAULT_GOVERNED_MODELS: frozenset[tuple[str, str]] = frozenset(
+    (c.provider_id, c.model) for c in DEFAULT_CANDIDATES
+)
+
+DEFAULT_GOVERNED_CAPABILITIES: frozenset[tuple[str, str, ProviderCapability]] = frozenset({
+    ("vm100_local_ollama", "qwen3:8b", ProviderCapability.TEXT),
+    ("vm100_local_ollama", "qwen3:8b", ProviderCapability.STRUCTURED_JSON),
+    ("gpu_ollama", "qwen3:8b", ProviderCapability.TEXT),
+    ("gpu_ollama", "qwen3:8b", ProviderCapability.STRUCTURED_JSON),
+    ("mistral_external", "mistral-small-latest", ProviderCapability.TEXT),
+    ("mistral_external", "mistral-small-latest", ProviderCapability.STRUCTURED_JSON),
+})
+
 
 def _build_default_policy(
     candidates: tuple[RouteCandidate, ...],
     capability: ProviderCapability,
     request_egress_authorized: bool,
 ) -> RoutePolicy:
-    """Construct a RoutePolicy authorizing the specified candidates and capability."""
-    authorized_providers = frozenset(c.provider_id for c in candidates)
+    """Construct a RoutePolicy authorizing strictly default governed provider-model pairs and capabilities."""
+    authorized_pairs = tuple(
+        c
+        for c in candidates
+        if (c.provider_id, c.model, capability) in DEFAULT_GOVERNED_CAPABILITIES
+    )
+    authorized_providers = frozenset(c.provider_id for c in authorized_pairs)
     capability_auths = frozenset(
         CapabilityAuthorization(
             provider_id=c.provider_id,
             model=c.model,
             capability=capability,
         )
-        for c in candidates
+        for c in authorized_pairs
     )
     return RoutePolicy(
         authorized_provider_ids=authorized_providers,
         capability_authorizations=capability_auths,
         request_egress_authorized=request_egress_authorized,
     )
+
+
+def _resolve_request_egress_authorized(
+    *,
+    request_egress_authorized: bool,
+    policy: RoutePolicy | None,
+    resolved_policy: RoutePolicy,
+) -> bool:
+    """Reconcile function argument with custom RoutePolicy egress authorization."""
+    policy_authorized = resolved_policy.request_egress_authorized is True
+    arg_authorized = request_egress_authorized is True
+
+    if policy is not None:
+        if arg_authorized and not policy_authorized:
+            raise ValueError(
+                "Contradictory egress authorization: request_egress_authorized=True "
+                "but custom RoutePolicy.request_egress_authorized is not True"
+            )
+        return policy_authorized or arg_authorized
+
+    return arg_authorized
 
 
 def execute_chat(
@@ -96,12 +136,30 @@ def execute_chat(
         AllCandidatesExhaustedError: If all eligible candidates failed during execution.
         RequestDeadlineExceededError: If shared time budget expires.
     """
-    resolved_candidates = tuple(candidates or DEFAULT_CANDIDATES)
-    resolved_health_store = health_store or ProviderHealthStore()
+    if runtime is not None and health_store is not None:
+        if runtime.health_store is not health_store:
+            raise ValueError(
+                "Conflicting health_store instances: provided health_store "
+                "differs from runtime.health_store"
+            )
+
+    resolved_candidates = (
+        tuple(candidates) if candidates is not None else DEFAULT_CANDIDATES
+    )
+    resolved_health_store = (
+        health_store
+        or (runtime.health_store if runtime is not None else None)
+        or ProviderHealthStore()
+    )
     resolved_policy = policy or _build_default_policy(
         candidates=resolved_candidates,
         capability=capability,
         request_egress_authorized=request_egress_authorized,
+    )
+    effective_egress = _resolve_request_egress_authorized(
+        request_egress_authorized=request_egress_authorized,
+        policy=policy,
+        resolved_policy=resolved_policy,
     )
 
     router = PrivacyAwareRouter(health_store=resolved_health_store)
@@ -123,7 +181,7 @@ def execute_chat(
         total_timeout_seconds=total_timeout_seconds,
         temperature=temperature,
         extra_options=extra_options or {},
-        request_egress_authorized=request_egress_authorized,
+        request_egress_authorized=effective_egress,
     )
 
     exec_runtime = runtime or SingleLoopRuntime(
@@ -153,6 +211,8 @@ def execute_prompt(
 
 __all__ = [
     "DEFAULT_CANDIDATES",
+    "DEFAULT_GOVERNED_CAPABILITIES",
+    "DEFAULT_GOVERNED_MODELS",
     "execute_chat",
     "execute_prompt",
 ]
