@@ -25,8 +25,9 @@ remain J2-or-later work.
 ## Technical context and constraints
 
 - Runtime baseline: ai-core `v0.3.1` at `85c82f5`.
-- D7 canon: v0.3.1 plus pc#291 extensions, all documented as
-  `accepted-in-canon, implementation pending`.
+- D7 canon: operator decision D7 (judgment provider canon, platform-control
+  ADR-024, merged in platform-control #338); v0.3.1 plus pc#291 extensions,
+  all documented as `accepted-in-canon, implementation pending`.
 - Current runtime provider identities and capabilities are not modified by this
   documentation package.
 - A future J1 implementation must add `JUDGMENT` as a distinct capability; it
@@ -35,8 +36,9 @@ remain J2-or-later work.
   allowed fallback. Retry/fallback loops must have one owner.
 - Privacy/egress denial occurs before transport construction, credential lookup,
   retry, and fallback.
-- Hosted Jev permits only `PUBLIC` or confirmed `ANONYMIZED` data. ZDR is not
-  assumed. `kev_local` has no hosted fallback.
+- Hosted Jev permits only `DataClass.SYNTHETIC` and `DataClass.PUBLIC_NO_PII`
+  from `src/ai_core/privacy.py`. All other `DataClass` values are local-only or
+  denied. ZDR is not assumed. `kev_local` has no hosted fallback.
 - Exact provider/model/version pins are mandatory for admitted behavior; no
   `*-latest` selector is valid for such behavior.
 - Thresholds are scoped to provider, model, version, and decision pack. They
@@ -64,7 +66,8 @@ not create files in this package.
 
 Catalog integration belongs in the existing catalog/capability/routing surfaces
 only after J1 authorization. It must preserve their explicit identity,
-capability, privacy/egress, health, and policy gates.
+capability, privacy/egress, health, and policy gates. Consumer integration is
+handled later as a fail-neutral protocol for consumers and is not part of J1.
 
 ## Implementation sequence
 
@@ -122,8 +125,9 @@ capability, privacy/egress, health, and policy gates.
 
 1. D7 canon remains recorded as v0.3.1 plus pc#291 extensions; no unresolved
    architecture decision may be inferred by the implementer.
-2. Before J1 starts, `AUTHORIZE_J1` must be explicitly recorded by the
-   authorized operator/governance process.
+2. Before J1 starts, `AUTHORIZE_J1` with scope `contract_only` must be
+   explicitly recorded by the authorized operator/governance process; the
+   current state remains `HOLD_J1`.
 3. Before any catalog or runtime change, the implementation must receive
    platform-control review because it changes provider/capability contracts.
 4. Before J1 is accepted, a human reviews the exact head, contract tests,

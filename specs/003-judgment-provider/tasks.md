@@ -9,13 +9,14 @@ runtime changes in this package.
 ## J1 prerequisites
 
 - [ ] **J001 — Confirm the bounded implementation gate**
-  - **Inputs**: exact J1 authorization, approved D7 compatibility statement,
-    exact v0.3.1 baseline, and platform-control review requirement.
+  - **Inputs**: `AUTHORIZE_J1` with scope `contract_only`, current state
+    `HOLD_J1`, approved D7 compatibility statement, exact v0.3.1 baseline,
+    and platform-control review requirement.
   - **Changed surfaces**: none until the gate is confirmed.
-  - **Deterministic acceptance**: the written authorization names J1; the
-    baseline remains v0.3.1 plus pc#291 extensions marked
-    `accepted-in-canon, implementation pending`; no pending architecture
-    decision is left to the implementer.
+  - **Deterministic acceptance**: the written authorization names J1 and the
+    `contract_only` scope; the baseline remains v0.3.1 plus pc#291 extensions
+    marked `accepted-in-canon, implementation pending`; no pending
+    architecture decision is left to the implementer.
   - **STOP**: authorization is absent, D7 facts conflict with the baseline, or
     a new provider/authority decision is needed.
 
@@ -78,8 +79,8 @@ runtime changes in this package.
     selector.
   - **Deterministic acceptance**: denied requests return
     `privacy_egress_denied`; all fakes show zero calls; hosted Jev receives
-    only `PUBLIC` or confirmed `ANONYMIZED` data; `kev_local` has no hosted
-    fallback.
+    only `DataClass.SYNTHETIC` and `DataClass.PUBLIC_NO_PII`; `kev_local` has
+    no hosted fallback.
   - **STOP**: zero-data-retention is assumed without evidence, a sensitive
     local flow requires hosted fallback, or ordering cannot be tested.
 
@@ -125,7 +126,7 @@ runtime changes in this package.
     J004–J008 test doubles.
   - **Changed surfaces**: future runtime tests only.
   - **Deterministic acceptance**: error, timeout, invalid response, `Noul`,
-    and low-confidence fixtures preserve baseline model/effort/context/queue,
+    and low-confidence fixtures preserve baseline model/effort/context,
     avoid tool calls, use `needs_review` for on-prem routing, and deny or
     require review for protected actions.
   - **STOP**: any test outcome auto-approves, authorizes, merges, grants
@@ -151,7 +152,8 @@ The following are J2-or-later work and are not implementation tasks for J1:
   network integrations, or real calls;
 - offline evaluation, labelled corpora, calibration, threshold selection, and
   provider/model/version/decision-pack admission;
-- consumer integrations, shadow runs, durable workflow retry, deployment,
-  release, or production routing;
+- consumer integrations, the later fail-neutral consumer state protocol,
+  shadow runs, durable workflow retry, deployment, release, or production
+  routing;
 - additions of pc#291 provider identities, aliases, or `STT_SEGMENTS` to
   runtime code unless separately authorized.

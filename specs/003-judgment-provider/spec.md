@@ -114,9 +114,11 @@ relevant baseline rather than manufacturing a more favorable result.
 
 Privacy and egress eligibility are evaluated before transport construction,
 credential lookup, retry, or fallback. Hosted `typesafe_jev` may receive only
-`PUBLIC` data or data confirmed as `ANONYMIZED` by applicable evidence. Zero
-data retention is not assumed without contractual evidence. `kev_local` is the
-local/no-egress option for sensitive data.
+`DataClass.SYNTHETIC` and `DataClass.PUBLIC_NO_PII` from
+`src/ai_core/privacy.py`. All other `DataClass` values are local-only or
+denied. The typed anonymization mapping is deferred to Wave C and is not
+defined here. Zero data retention is not assumed without contractual evidence.
+`kev_local` is the local/no-egress option for sensitive data.
 
 Telemetry is metadata-only by default: outcome, normalized error category,
 latency, retry count, provider identity, exact model/version, and decision-pack
@@ -166,8 +168,10 @@ test-only and is not a production provider.
 
 ## D7 compatibility statement
 
-The D7 canonical provider set is **ai-core v0.3.1 plus pc#291 extensions**.
-The extensions `gpu_whisper`, `openai_external`, `deepseek_external`,
+The D7 canonical provider set, recorded as operator decision D7
+(judgment provider canon, platform-control ADR-024, merged in
+platform-control #338), is **ai-core v0.3.1 plus pc#291 extensions**. The
+extensions `gpu_whisper`, `openai_external`, `deepseek_external`,
 `STT_SEGMENTS`, and the pc#291 migration aliases are
 **accepted-in-canon, implementation pending**. They are canonical
 documentation inputs only in this package and do not block
@@ -202,6 +206,7 @@ package.
 ## Acceptance boundary
 
 ### J1 acceptance criteria for a separately authorized implementation PR
+(`AUTHORIZE_J1`, scope `contract_only`; current state `HOLD_J1`)
 
 - A typed `JudgmentProvider`, `Choice`, `Score`, and `Noul` contract validates
   requests and responses without treating text/JSON generation as the result.
@@ -222,4 +227,6 @@ package.
 Provider adapters for `typesafe_jev` or `kev_local`, their SDKs and
 credentials, real network calls, offline evaluation, calibrated thresholds,
 consumer integration, provider admission, deployment, and per-decision-pack
-admission are outside J1. They require separate authorization and evidence.
+admission are outside J1. Consumer integration is a later fail-neutral
+protocol for consumers and is intentionally deferred until after J1. These
+areas require separate authorization and evidence.
