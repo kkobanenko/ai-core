@@ -79,3 +79,5 @@ v0.2:   Executor owns bounded edits; Coordinator owns
 v0.2.1: optional declared transient_paths with baseline + exact cleanup
         (e.g. uv.lock) — never silent ignore, never .gitignore for agent
 ```
+
+JudgmentProvider Spec Kit: [plan-only; no runtime authorization](../../specs/003-judgment-provider/spec.md).
