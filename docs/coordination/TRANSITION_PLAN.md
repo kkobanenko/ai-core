@@ -62,6 +62,8 @@ Human says "Твой ход"
 | First suitable **new** package | Spec Kit–native planning/execution artifacts | `spec.md`/`plan.md`/`tasks.md` are authority; `next-prompt.md` carries bounded EXECUTOR_READY transport |
 | v0.2 (future) | May move commit/push/report publication into Coordinator | Still no autonomous architectural decisions |
 
+JudgmentProvider D7/J1 design: [`specs/003-judgment-provider/`](../../specs/003-judgment-provider/spec.md) — D7 canonical; J1 implementation remains separately gated.
+
 ## Fail-closed defaults
 
 - Legacy `# WAIT` → do nothing, exit cleanly.
