@@ -46,7 +46,7 @@ def test_catalog_contains_only_identity_and_network_boundary_metadata() -> None:
         NetworkBoundary.LOCAL_SAME_HOST
     )
     assert catalog["gpu_ollama"].network_boundary is (
-        NetworkBoundary.UNKNOWN_BOUNDARY
+        NetworkBoundary.INTERNAL_TRUSTED
     )
     assert catalog["ollama_cloud"].network_boundary is NetworkBoundary.EXTERNAL
     assert catalog["mistral_external"].network_boundary is NetworkBoundary.EXTERNAL
@@ -80,4 +80,15 @@ def test_known_provider_lookup_returns_canonical_record() -> None:
 
     assert identity is get_provider_catalog()["gpu_ollama"]
     assert identity.provider_id == "gpu_ollama"
-    assert identity.network_boundary is NetworkBoundary.UNKNOWN_BOUNDARY
+    assert identity.network_boundary is NetworkBoundary.INTERNAL_TRUSTED
+
+
+def test_gpu_ollama_boundary_is_internal_trusted_not_local_same_host() -> None:
+    """gpu_ollama is the internal trusted GPU boundary, not same-host."""
+
+    identity = get_provider_identity(PROVIDER_GPU_OLLAMA)
+
+    assert identity.network_boundary is NetworkBoundary.INTERNAL_TRUSTED
+    assert identity.network_boundary is not NetworkBoundary.LOCAL_SAME_HOST
+    assert identity.network_boundary.value == "internal_trusted"
+    assert NetworkBoundary.INTERNAL_TRUSTED.value == "internal_trusted"

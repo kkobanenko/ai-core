@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2 - Unreleased
+
+### Changed
+- **GPU trust boundary**: `gpu_ollama` is `INTERNAL_TRUSTED` (`internal_trusted`). It is not `LOCAL_SAME_HOST` and not `UNKNOWN_BOUNDARY`. `INTERNAL_TRUSTED` allows every valid non-SECRET data class, including `PRIVATE_CLIENT_DATA`, without external-cloud egress authorization. `SECRET` stays denied for every boundary and every outbound form. `LOCAL_SAME_HOST`, `EXTERNAL`, and `UNKNOWN_BOUNDARY` behavior is unchanged. Provider identities and aliases are unchanged.
+
 ## 0.3.1 - 2026-09-17
 
 ### Fixed

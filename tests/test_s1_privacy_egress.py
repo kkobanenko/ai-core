@@ -8,8 +8,16 @@ from ai_core.provider_catalog import NetworkBoundary
 
 GOVERNED_BOUNDARIES = (
     NetworkBoundary.LOCAL_SAME_HOST,
+    NetworkBoundary.INTERNAL_TRUSTED,
     NetworkBoundary.EXTERNAL,
     NetworkBoundary.UNKNOWN_BOUNDARY,
+)
+
+NON_SECRET_DATA_CLASSES = (
+    DataClass.SYNTHETIC,
+    DataClass.PUBLIC_NO_PII,
+    DataClass.PUBLIC_POSSIBLE_PII,
+    DataClass.PRIVATE_CLIENT_DATA,
 )
 
 
@@ -94,6 +102,91 @@ def test_non_secret_same_host_data_does_not_require_egress_authorization() -> No
         outbound_form=OutboundForm.RAW,
         network_boundary=NetworkBoundary.LOCAL_SAME_HOST,
     )
+
+
+def test_private_client_data_internal_trusted_without_egress_is_eligible() -> None:
+    assert is_egress_eligible(
+        data_class=DataClass.PRIVATE_CLIENT_DATA,
+        outbound_form=OutboundForm.RAW,
+        network_boundary=NetworkBoundary.INTERNAL_TRUSTED,
+        request_egress_authorized=False,
+    ) is True
+
+
+def test_public_possible_pii_internal_trusted_is_eligible() -> None:
+    assert is_egress_eligible(
+        data_class=DataClass.PUBLIC_POSSIBLE_PII,
+        outbound_form=OutboundForm.SANITIZED,
+        network_boundary=NetworkBoundary.INTERNAL_TRUSTED,
+    ) is True
+
+
+@pytest.mark.parametrize("data_class", NON_SECRET_DATA_CLASSES)
+@pytest.mark.parametrize("outbound_form", tuple(OutboundForm))
+def test_internal_trusted_allows_every_valid_non_secret_class(
+    data_class: DataClass,
+    outbound_form: OutboundForm,
+) -> None:
+    assert is_egress_eligible(
+        data_class=data_class,
+        outbound_form=outbound_form,
+        network_boundary=NetworkBoundary.INTERNAL_TRUSTED,
+        request_egress_authorized=False,
+    ) is True
+
+
+def test_secret_internal_trusted_is_denied_even_with_egress_authorization() -> None:
+    assert is_egress_eligible(
+        data_class=DataClass.SECRET,
+        outbound_form=OutboundForm.RAW,
+        network_boundary=NetworkBoundary.INTERNAL_TRUSTED,
+        request_egress_authorized=True,
+    ) is False
+
+
+def test_external_still_requires_literal_true() -> None:
+    assert is_egress_eligible(
+        data_class=DataClass.PRIVATE_CLIENT_DATA,
+        outbound_form=OutboundForm.RAW,
+        network_boundary=NetworkBoundary.EXTERNAL,
+        request_egress_authorized=False,
+    ) is False
+    assert is_egress_eligible(
+        data_class=DataClass.PRIVATE_CLIENT_DATA,
+        outbound_form=OutboundForm.RAW,
+        network_boundary=NetworkBoundary.EXTERNAL,
+        request_egress_authorized=True,
+    ) is True
+    assert is_egress_eligible(  # type: ignore[arg-type]
+        data_class=DataClass.PRIVATE_CLIENT_DATA,
+        outbound_form=OutboundForm.RAW,
+        network_boundary=NetworkBoundary.EXTERNAL,
+        request_egress_authorized=1,
+    ) is False
+
+
+def test_unknown_boundary_behavior_is_unchanged() -> None:
+    assert is_egress_eligible(
+        data_class=DataClass.PRIVATE_CLIENT_DATA,
+        outbound_form=OutboundForm.SANITIZED,
+        network_boundary=NetworkBoundary.UNKNOWN_BOUNDARY,
+        request_egress_authorized=False,
+    ) is False
+    assert is_egress_eligible(
+        data_class=DataClass.PRIVATE_CLIENT_DATA,
+        outbound_form=OutboundForm.SANITIZED,
+        network_boundary=NetworkBoundary.UNKNOWN_BOUNDARY,
+        request_egress_authorized=True,
+    ) is True
+
+
+def test_invalid_internal_trusted_string_fails_closed() -> None:
+    assert is_egress_eligible(  # type: ignore[arg-type]
+        data_class=DataClass.PUBLIC_NO_PII,
+        outbound_form=OutboundForm.RAW,
+        network_boundary="internal_trusted",
+        request_egress_authorized=True,
+    ) is False
 
 
 @pytest.mark.parametrize(

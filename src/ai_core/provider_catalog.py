@@ -16,6 +16,9 @@ class NetworkBoundary(str, Enum):
     """Governed network boundary for an accepted provider identity."""
 
     LOCAL_SAME_HOST = "local_same_host"
+    # Внутренняя доверенная граница. Это не тот же хост и не внешнее облако.
+    # Оператор разрешил gpu_ollama обрабатывать приватные данные, но не SECRET.
+    INTERNAL_TRUSTED = "internal_trusted"
     EXTERNAL = "external"
     UNKNOWN_BOUNDARY = "unknown_boundary"
 
@@ -53,7 +56,8 @@ _PROVIDER_CATALOG: Mapping[str, ProviderIdentity] = MappingProxyType(
         ),
         PROVIDER_GPU_OLLAMA: ProviderIdentity(
             provider_id=PROVIDER_GPU_OLLAMA,
-            network_boundary=NetworkBoundary.UNKNOWN_BOUNDARY,
+            # Только gpu_ollama. Алиасы и остальные провайдеры не меняются.
+            network_boundary=NetworkBoundary.INTERNAL_TRUSTED,
         ),
         PROVIDER_OLLAMA_CLOUD: ProviderIdentity(
             provider_id=PROVIDER_OLLAMA_CLOUD,

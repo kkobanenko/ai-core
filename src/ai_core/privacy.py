@@ -35,7 +35,9 @@ def is_egress_eligible(
     """Evaluate the pre-routing privacy and request-egress boundary.
 
     SECRET is denied before any transformation, lookup, routing, retry, or
-    fallback. Non-local egress requires explicit request-level authorization.
+    fallback. LOCAL_SAME_HOST and INTERNAL_TRUSTED allow every valid
+    non-SECRET class without request egress authorization. EXTERNAL and
+    UNKNOWN_BOUNDARY still require literal request_egress_authorized=True.
     ``outbound_form`` is intentionally not used to weaken classification.
     """
 
@@ -46,12 +48,21 @@ def is_egress_eligible(
     if not isinstance(network_boundary, NetworkBoundary):
         return False
 
+    # SECRET запрещён на любой границе и в любой форме исходящих данных.
     if data_class is DataClass.SECRET:
         return False
 
+    # Тот же хост: любой допустимый не-SECRET класс без разрешения на egress.
     if network_boundary is NetworkBoundary.LOCAL_SAME_HOST:
         return True
 
+    # Внутренняя доверенная граница (gpu_ollama). Это не LOCAL_SAME_HOST.
+    # Внешнее облачное разрешение на egress здесь не требуется.
+    # SANITIZED и SURROGATED не понижают класс данных: класс уже проверен выше.
+    if network_boundary is NetworkBoundary.INTERNAL_TRUSTED:
+        return True
+
+    # EXTERNAL и UNKNOWN_BOUNDARY: только буквальное True.
     return request_egress_authorized is True
 
 
