@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2 - Unreleased
+
+### Changed
+- **GPU trust boundary**: `gpu_ollama` is `INTERNAL_TRUSTED` (`internal_trusted`). It is not `LOCAL_SAME_HOST` and not `UNKNOWN_BOUNDARY`. `INTERNAL_TRUSTED` allows every valid non-SECRET data class, including `PRIVATE_CLIENT_DATA`, without external-cloud egress authorization. `SECRET` stays denied for every boundary and every outbound form. `EXTERNAL` and `UNKNOWN_BOUNDARY` still require literal `request_egress_authorized=True`.
+- **Transport gate**: `execute_transport_attempt` uses the same `is_egress_eligible` decision as the planner. A `gpu_ollama` fallback no longer raises `EgressNotAuthorizedError` when the egress flag is false. A non-loopback endpoint override still requires literal `True` for both `LOCAL_SAME_HOST` and `INTERNAL_TRUSTED`. Provider identities and aliases are unchanged.
+
 ## 0.3.1 - 2026-09-17
 
 ### Fixed

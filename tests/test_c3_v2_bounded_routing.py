@@ -146,7 +146,7 @@ def test_runtime_capability_evidence_alone_never_authorizes_route():
         provider_id="gpu_ollama",
         model="qwen3.5:9b",
         capability=ProviderCapability.STRUCTURED_JSON,
-        network_boundary=NetworkBoundary.UNKNOWN_BOUNDARY,
+        network_boundary=NetworkBoundary.INTERNAL_TRUSTED,
         level=CapabilityEvidenceLevel.RUNTIME_OBSERVED,
     )
     assert evidence.level is CapabilityEvidenceLevel.RUNTIME_OBSERVED
@@ -198,16 +198,42 @@ def test_secret_is_always_rejected(candidate, egress_authorized):
     "authorization",
     [False, 1, "yes", object()],
 )
-def test_nonlocal_egress_requires_literal_true(authorization):
+def test_internal_trusted_gpu_planner_does_not_require_literal_egress(
+    authorization,
+):
+    # gpu_ollama = INTERNAL_TRUSTED: планировщик пускает не-SECRET без literal True.
     router = PrivacyAwareRouter()
 
     plan = router.plan(
         [GPU_JSON],
         capability=ProviderCapability.STRUCTURED_JSON,
-        data_class=DataClass.PUBLIC_NO_PII,
+        data_class=DataClass.PRIVATE_CLIENT_DATA,
         outbound_form=OutboundForm.RAW,
         policy=policy_for(
             GPU_JSON,
+            request_egress_authorized=authorization,
+        ),
+    )
+
+    assert plan.eligible == (GPU_JSON,)
+    assert plan.rejected == ()
+
+
+@pytest.mark.parametrize(
+    "authorization",
+    [False, 1, "yes", object()],
+)
+def test_external_egress_requires_literal_true(authorization):
+    # EXTERNAL не ослаблен: mistral по-прежнему требует буквальный True.
+    router = PrivacyAwareRouter()
+
+    plan = router.plan(
+        [MISTRAL_JSON],
+        capability=ProviderCapability.STRUCTURED_JSON,
+        data_class=DataClass.PUBLIC_NO_PII,
+        outbound_form=OutboundForm.RAW,
+        policy=policy_for(
+            MISTRAL_JSON,
             request_egress_authorized=authorization,
         ),
     )

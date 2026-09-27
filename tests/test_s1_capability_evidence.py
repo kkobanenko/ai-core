@@ -69,7 +69,7 @@ def test_evidence_boundary_must_match_governed_provider_boundary() -> None:
     with pytest.raises(
         ValueError,
         match=(
-            "Boundary mismatch for gpu_ollama: governed=unknown_boundary "
+            "Boundary mismatch for gpu_ollama: governed=internal_trusted "
             "evidence=local_same_host"
         ),
     ):
@@ -100,7 +100,7 @@ def test_only_runtime_observed_counts_as_runtime_observation(
         provider_id="gpu_ollama",
         model="qwen3-vl:4b",
         capability=ProviderCapability.VISION_IMAGE,
-        network_boundary=NetworkBoundary.UNKNOWN_BOUNDARY,
+        network_boundary=NetworkBoundary.INTERNAL_TRUSTED,
         level=level,
     )
 

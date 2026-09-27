@@ -30,6 +30,7 @@ from ai_core.executor import (
 )
 from ai_core.health import ProviderHealthStatus, ProviderHealthStore
 from ai_core.privacy import DataClass, OutboundForm
+from ai_core.provider_catalog import NetworkBoundary, ProviderIdentity
 from ai_core.routing import (
     CapabilityAuthorization,
     PrivacyAwareRouter,
@@ -285,21 +286,70 @@ def test_7_custom_runtime_shares_health_store_with_router() -> None:
 
 
 def test_8_package_version_and_nine_symbol_invariant() -> None:
-    """Audit Finding 8: ai_core.__version__ is 0.3.1 and root __all__ invariant is preserved."""
-    assert getattr(ai_core, "__version__", None) == "0.3.1"
+    """Audit Finding 8: ai_core.__version__ is 0.3.2 and root __all__ invariant is preserved."""
+    assert getattr(ai_core, "__version__", None) == "0.3.2"
     assert len(ai_core.__all__) == 9
 
 
-def test_9_egress_proof_required_for_non_local_transports() -> None:
-    """PR #23 P1: execute_transport_attempt fails-closed if non-local provider lacks egress authorization."""
+def test_9_internal_trusted_gpu_passes_transport_without_egress_flag() -> None:
+    """INTERNAL_TRUSTED не требует флаг. EXTERNAL и UNKNOWN_BOUNDARY по-прежнему требуют literal True."""
     gpu_cand = RouteCandidate(provider_id="gpu_ollama", model="qwen3:8b")
-    req = TransportRequest(
+    gpu_transport = MagicMock(spec=ProviderTransport)
+    gpu_transport.send_attempt.return_value = _mock_success(gpu_cand, "gpu ok")
+    gpu_request = TransportRequest(
         candidate=gpu_cand,
         messages=({"role": "user", "content": "hi"},),
         request_egress_authorized=False,
+        data_class=DataClass.PRIVATE_CLIENT_DATA,
+    )
+
+    # Шлюз пропускает gpu_ollama без флага и доходит до фейкового транспорта.
+    result = execute_transport_attempt(gpu_request, transport=gpu_transport)
+
+    assert result.ok
+    gpu_transport.send_attempt.assert_called_once()
+
+    external_cand = RouteCandidate(provider_id="mistral_external", model="mistral-small-latest")
+    external_request = TransportRequest(
+        candidate=external_cand,
+        messages=({"role": "user", "content": "hi"},),
+        request_egress_authorized=False,
+        data_class=DataClass.PUBLIC_NO_PII,
     )
     with pytest.raises(EgressNotAuthorizedError):
-        execute_transport_attempt(req)
+        execute_transport_attempt(external_request, transport=MagicMock(spec=ProviderTransport))
+
+    unknown_cand = RouteCandidate(provider_id="gpu_ollama", model="qwen3:8b")
+
+    def _unknown_boundary(provider_id: str) -> ProviderIdentity:
+        return ProviderIdentity(
+            provider_id=provider_id,
+            network_boundary=NetworkBoundary.UNKNOWN_BOUNDARY,
+        )
+
+    with unittest.mock.patch(
+        "ai_core.transports.get_provider_identity",
+        side_effect=_unknown_boundary,
+    ):
+        unknown_request = TransportRequest(
+            candidate=unknown_cand,
+            messages=({"role": "user", "content": "hi"},),
+            request_egress_authorized=False,
+        )
+        with pytest.raises(EgressNotAuthorizedError):
+            execute_transport_attempt(
+                unknown_request,
+                transport=MagicMock(spec=ProviderTransport),
+            )
+
+    secret_request = TransportRequest(
+        candidate=gpu_cand,
+        messages=({"role": "user", "content": "hi"},),
+        request_egress_authorized=True,
+        data_class=DataClass.SECRET,
+    )
+    with pytest.raises(EgressNotAuthorizedError):
+        execute_transport_attempt(secret_request, transport=MagicMock(spec=ProviderTransport))
 
 
 def test_10_mistral_extra_options_cannot_overwrite_model_or_messages() -> None:
@@ -336,10 +386,13 @@ def test_11_no_redirect_handler_denies_redirects() -> None:
     assert result is None
 
 
-def test_12_endpoint_egress_bypass_prevented() -> None:
-    """Security P1: Local provider candidate with remote endpoint override requires egress authorization."""
-    cand = RouteCandidate(provider_id="vm100_local_ollama", model="qwen3:8b")
-    # Endpoint points to external host, but request_egress_authorized is False
+@pytest.mark.parametrize(
+    "provider_id",
+    ["vm100_local_ollama", "gpu_ollama"],
+)
+def test_12_endpoint_egress_bypass_prevented(provider_id: str) -> None:
+    """Подмена endpoint на чужой хост требует флаг и для LOCAL_SAME_HOST, и для INTERNAL_TRUSTED."""
+    cand = RouteCandidate(provider_id=provider_id, model="qwen3:8b")
     req = TransportRequest(
         candidate=cand,
         messages=({"role": "user", "content": "hello"},),
@@ -347,7 +400,7 @@ def test_12_endpoint_egress_bypass_prevented() -> None:
         request_egress_authorized=False,
     )
     with pytest.raises(EgressNotAuthorizedError) as exc_info:
-        execute_transport_attempt(req)
+        execute_transport_attempt(req, transport=MagicMock(spec=ProviderTransport))
     assert "requires egress authorization" in str(exc_info.value)
 
 
@@ -388,16 +441,34 @@ def test_14_uncataloged_capability_not_authorized_in_default_policy() -> None:
         )
 
 
-def test_15_truthy_non_boolean_egress_rejected_at_transport_boundary() -> None:
-    """Review P1: truthy non-booleans must not authorize external transport egress."""
+@pytest.mark.parametrize("truthy_non_boolean", ["true", 1, "yes"])
+def test_15_truthy_non_boolean_egress_rejected_at_transport_boundary(
+    truthy_non_boolean: object,
+) -> None:
+    """EXTERNAL отклоняет truthy не-bool. INTERNAL_TRUSTED без флага шлюз пропускает."""
     gpu_cand = RouteCandidate(provider_id="gpu_ollama", model="qwen3:8b")
-    req = TransportRequest(
-        candidate=gpu_cand,
-        messages=({"role": "user", "content": "hi"},),
-        request_egress_authorized="true",  # type: ignore[arg-type]
+    gpu_transport = MagicMock(spec=ProviderTransport)
+    gpu_transport.send_attempt.return_value = _mock_success(gpu_cand)
+    gpu_result = execute_transport_attempt(
+        TransportRequest(
+            candidate=gpu_cand,
+            messages=({"role": "user", "content": "hi"},),
+            request_egress_authorized=False,
+        ),
+        transport=gpu_transport,
     )
+    assert gpu_result.ok
+
+    external_cand = RouteCandidate(provider_id="mistral_external", model="mistral-small-latest")
     with pytest.raises(EgressNotAuthorizedError):
-        execute_transport_attempt(req)
+        execute_transport_attempt(
+            TransportRequest(
+                candidate=external_cand,
+                messages=({"role": "user", "content": "hi"},),
+                request_egress_authorized=truthy_non_boolean,  # type: ignore[arg-type]
+            ),
+            transport=MagicMock(spec=ProviderTransport),
+        )
 
 
 def test_16_custom_policy_egress_true_with_default_arg_executes() -> None:
@@ -426,6 +497,34 @@ def test_16_custom_policy_egress_true_with_default_arg_executes() -> None:
     )
     assert result.content == "policy egress ok"
     assert mock_transport.send_attempt.call_count == 1
+
+
+def test_18_gpu_fallback_reaches_transport_without_egress_flag() -> None:
+    """Codex P1: при флаге False фолбэк на gpu_ollama доходит до транспорта, без сети."""
+    local_cand = RouteCandidate(provider_id="vm100_local_ollama", model="qwen3:8b")
+    gpu_cand = RouteCandidate(provider_id="gpu_ollama", model="qwen3:8b")
+    mock_transport = MagicMock(spec=ProviderTransport)
+    mock_transport.send_attempt.side_effect = [
+        _mock_error(local_cand, kind=AiErrorKind.TIMEOUT),
+        _mock_success(gpu_cand, "gpu fallback ok"),
+    ]
+
+    result = execute_chat(
+        messages=[{"role": "user", "content": "hi"}],
+        candidates=[local_cand, gpu_cand],
+        data_class=DataClass.PRIVATE_CLIENT_DATA,
+        request_egress_authorized=False,
+        transport=mock_transport,
+    )
+
+    assert result.winner == gpu_cand
+    assert result.content == "gpu fallback ok"
+    assert result.fallback_occurred
+    assert mock_transport.send_attempt.call_count == 2
+    for call in mock_transport.send_attempt.call_args_list:
+        sent = call.args[0]
+        assert sent.request_egress_authorized is False
+        assert sent.data_class is DataClass.PRIVATE_CLIENT_DATA
 
 
 def test_17_short_deadline_still_attempts_primary_candidate() -> None:
