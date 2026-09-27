@@ -62,7 +62,7 @@ not create files in this package.
 | `src/ai_core/judgment_privacy.py` | Judgment-specific mapping to existing privacy/egress contracts before any transport attempt. |
 | `src/ai_core/judgment_telemetry.py` | Metadata-only event shaping and explicit payload exclusion. |
 | `src/ai_core/judgment_mock.py` | Test-only deterministic `mock_judgment` implementation. |
-| `tests/test_judgment_*.py` | Contract, validation, privacy, deadline, serialization, telemetry, and failure-matrix evidence. |
+| `tests/test_judgment_*.py` | Contract, validation, privacy, deadline, serialization, telemetry, and J1 fail-closed evidence. |
 
 Catalog integration belongs in the existing catalog/capability/routing surfaces
 only after J1 authorization. It must preserve their explicit identity,
@@ -74,7 +74,8 @@ handled later as a fail-neutral protocol for consumers and is not part of J1.
 1. **J1 contract** — add typed contracts and provider-neutral errors; define
    serialization only for typed values, not provider text.
 2. **J1 tests** — write contract, validation, privacy, deadline, telemetry,
-   serialization, and failure-matrix tests with the deterministic mock.
+   serialization, and J1 fail-closed tests with the deterministic mock (no
+   consumer state fixtures).
 3. **J1 review** — verify exact implementation head against this specification,
    D7 compatibility, source/runtime diffs, and test evidence.
 4. **Release decision** — a human/operator governance decision determines
@@ -88,10 +89,10 @@ handled later as a fail-neutral protocol for consumers and is not part of J1.
 | Contract tests | Valid `Choice`, `Score`, and `Noul` round trips; undeclared choices, non-finite/out-of-range scores, ambiguous variants, missing exact pins, and invalid decision-pack references fail before consumers observe a result. |
 | Privacy gate tests | Hosted providers receive only eligible classification; gate denial happens before mock transport, credential resolver, retry scheduler, and fallback selector are invoked. |
 | Deadline tests | Timeout, 429, 529, and provider-unavailable paths consume one shared deadline; no retry or fallback begins after budget exhaustion. |
-| Fallback tests | `kev_local` never selects a hosted fallback; unavailable/low-confidence outcomes preserve the declared baseline. |
+| Fallback tests | `kev_local` never selects a hosted fallback; unavailable paths yield typed errors or policy-permitted fallback only (no consumer baseline assertions). |
 | Serialization tests | Typed request and response metadata serialize deterministically; no free-form provider response is accepted as a result. |
 | Telemetry tests | Allowed metadata is emitted; prompts, responses, payload fragments, decision values, and credentials are absent by default. |
-| Failure-matrix tests | Each specified decision surface produces its fail-neutral or fail-closed outcome, never an automatic approval. |
+| Fail-closed contract tests | Invalid input/output, privacy denial, deadline exhaustion, and mock error/`Noul` fixtures never expose unvalidated results or auto-approve; consumer model/effort/context, `needs_review`, and low-confidence routing are out of scope (see `spec.md` **Deferred beyond J1**). |
 | Catalog tests | A future `JUDGMENT` request remains ineligible without identity, exact model/capability authorization, privacy/egress, health, and governance admission. |
 
 ## Migration and compatibility constraints
@@ -119,7 +120,7 @@ handled later as a fail-neutral protocol for consumers and is not part of J1.
 | Local-sensitive path silently reaches hosted provider | Explicit no-hosted-fallback rule for `kev_local`; routing tests. | A local provider requires a hosted fallback. |
 | Threshold is copied across model/provider/pack | Make threshold scope part of the typed result metadata and test fixtures. | A consumer requests global threshold reuse. |
 | D7 pending extensions are represented as runtime facts | Compatibility tables distinguish current runtime from accepted canon. | J1 requires undocumented runtime expansion or D7 facts conflict with v0.3.1 baseline. |
-| Provider response gains authority | Fail-neutral/fail-closed matrix and explicit authority prohibitions. | A provider result is proposed to authorize protected action. |
+| Provider response gains authority | J1 fail-closed contract tests and explicit authority prohibitions. | A provider result is proposed to authorize protected action. |
 
 ## Exact human gates
 

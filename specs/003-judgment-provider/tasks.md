@@ -121,16 +121,22 @@ runtime changes in this package.
   - **STOP**: observability requires prompt/response or payload capture by
     default.
 
-- [ ] **J010 — Verify fail-neutral and fail-closed outcomes**
-  - **Inputs**: the matrix in `spec.md`, deterministic baseline fixtures, and
-    J004–J008 test doubles.
-  - **Changed surfaces**: future runtime tests only.
-  - **Deterministic acceptance**: error, timeout, invalid response, `Noul`,
-    and low-confidence fixtures preserve baseline model/effort/context,
-    avoid tool calls, use `needs_review` for on-prem routing, and deny or
-    require review for protected actions.
+- [ ] **J010 — Verify J1 fail-closed contract outcomes (ai-core only)**
+  - **Inputs**: J1 ai-core contract boundary in `spec.md`, provider-neutral
+    error taxonomy, privacy ordering from J006, deadline behavior from J007,
+    and J004–J008 test doubles including `mock_judgment`.
+  - **Changed surfaces**: future judgment contract/runtime tests only (no
+    consumer integration harness).
+  - **Deterministic acceptance**: invalid requests fail with `invalid_request`
+    before transport; denied privacy/egress fails closed before transport;
+    timeout, rate-limit, unavailable, and malformed mock responses surface
+    only normalized typed errors or validated `noul`/choice variants; consumer
+    callbacks never receive unvalidated provider output; telemetry stays
+    metadata-only. Tests do **not** assert consumer model/effort/context,
+    `needs_review`, low-confidence routing, tool calls, or queue state.
   - **STOP**: any test outcome auto-approves, authorizes, merges, grants
-    access, or replaces a deterministic check.
+    access, replaces a deterministic check, or requires consumer state
+    fixtures.
 
 - [ ] **J011 — Conduct exact-head review and human release decision**
   - **Inputs**: complete J1 diff, all J1 test results, D7 compatibility check,
@@ -157,3 +163,12 @@ The following are J2-or-later work and are not implementation tasks for J1:
   routing;
 - additions of pc#291 provider identities, aliases, or `STT_SEGMENTS` to
   runtime code unless separately authorized.
+
+## Deferred beyond J1 (C7 / architect response #6)
+
+Per AI-JUDGMENT-J010-BOUNDARY-01, these are not J1 tasks or J010 acceptance
+checks; they move to a post-J1 increment with explicit authorization:
+
+- baseline preservation for **model, effort, and context** on judgment failure;
+- consumer **`needs_review`** routing state for on-prem documents;
+- **low-confidence** routing and baseline handling outside typed ai-core errors.

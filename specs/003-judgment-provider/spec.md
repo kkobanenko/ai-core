@@ -107,8 +107,9 @@ bounded, and must not nest inside a transport or adapter. Future handling of
 Fallback is possible only after contract validation, privacy/egress gating,
 and a policy decision for the same decision pack. `kev_local` has no hosted
 fallback. Provider/model/version/decision-pack thresholds are never copied to
-another combination. Provider unavailability or low confidence preserves the
-relevant baseline rather than manufacturing a more favorable result.
+another combination. Within ai-core, provider unavailability yields typed
+errors or bounded fallback per policy; it does not assert consumer baselines
+(see **Deferred beyond J1**).
 
 ### Privacy, egress, telemetry, and version pinning
 
@@ -144,15 +145,45 @@ Neither the provider result nor any provider implementation may:
 
 ## Fail-neutral and fail-closed behavior
 
-| Decision surface | Error, timeout, invalid response, `Noul`, or low confidence |
+### J1 ai-core contract boundary
+
+J1 proves only what ai-core returns after validation and execution: a typed
+`choice`, `noul`, or provider-neutral `error`. ai-core does not read or mutate
+consumer queues, routing labels, model/effort selectors, or context filters.
+On failure, ai-core is fail-closed: invalid input and invalid provider output
+never reach consumer callbacks; privacy/egress denial occurs before transport;
+and no result variant grants merge, egress, access, or automatic approval.
+
+J1 failure tests cover contract validation, normalized error categories,
+deadline exhaustion, `invalid_provider_response`, and metadata-only telemetry —
+not consumer decision surfaces.
+
+### Fail-neutral protocol for consumers (post-J1)
+
+Consumers that integrate judgment results apply their own fail-neutral rules
+outside ai-core. ai-core supplies the typed result or error; the consumer
+decides review, routing, tool use, and queue changes. The table below is
+reference design for that later protocol; J1 does not runtime-test these rows.
+
+| Decision surface | Error, timeout, invalid response, or `Noul` (consumer applies) |
 | --- | --- |
-| Model or effort selection | Preserve the baseline model and baseline effort. |
-| Context filtering | Preserve the complete original context chunk. |
 | Tool selection | Do not call the tool; require human handoff where applicable. |
 | Egress, destructive action, access, or merge | Deny or require human review. |
 | Completion detection | Treat as incomplete; deterministic checks remain authoritative. |
 | Prozakupki review priority | Preserve the current queue. |
-| On-prem document routing | Use `needs_review`; no hosted fallback. |
+
+### Deferred beyond J1
+
+The following were removed from the J1 verification scope per platform
+remark **C7** and **architect response #6** (AI-JUDGMENT-J010-BOUNDARY-01).
+They remain documented for a later increment; they are not deleted from the
+overall judgment design.
+
+| Deferred item | Intended post-J1 behavior (consumer-owned) |
+| --- | --- |
+| Model, effort, and context selection | On judgment failure or `Noul`, preserve baseline model, baseline effort, and the complete original context chunk. |
+| `needs_review` routing state | On-prem document routing sets or preserves `needs_review`; no hosted fallback. |
+| Low-confidence routing and handling | Low-confidence outcomes preserve declared baselines and avoid manufacturing a more favorable result; routing follows consumer policy, not ai-core tests. |
 
 ## Planned catalog integration
 
@@ -220,13 +251,17 @@ package.
   payload is emitted by default.
 - A future `JUDGMENT` capability is eligible only through all existing catalog
   gates and separate governance admission.
-- Failure tests prove every row of the fail-neutral/fail-closed matrix.
+- Failure tests prove J1 ai-core fail-closed behavior (validation rejects
+  bad input/output before consumers observe a result; privacy gate ordering;
+  no automatic approval from errors, `Noul`, or mock fixtures). They do not
+  assert consumer model/effort/context, `needs_review`, or low-confidence
+  routing (see **Deferred beyond J1**).
 
 ### Explicit J2 and later scope
 
 Provider adapters for `typesafe_jev` or `kev_local`, their SDKs and
 credentials, real network calls, offline evaluation, calibrated thresholds,
 consumer integration, provider admission, deployment, and per-decision-pack
-admission are outside J1. Consumer integration is a later fail-neutral
-protocol for consumers and is intentionally deferred until after J1. These
-areas require separate authorization and evidence.
+admission are outside J1. Consumer integration, the fail-neutral protocol
+rows above, and all **Deferred beyond J1** items are intentionally deferred
+until after J1. These areas require separate authorization and evidence.
