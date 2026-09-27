@@ -86,7 +86,7 @@ Span должен появиться в Phoenix UI (через SSH tunnel на `
 Начиная с `v0.3.0` (и hardening в `v0.3.1`), `ai-core` предоставляет детерминированный single-loop runtime и высокоуровневый фасад `execute_chat` / `execute_prompt`:
 
 > [!IMPORTANT]
-> `gpu_ollama` находится на границе `INTERNAL_TRUSTED`: планировщик допускает любой допустимый не-SECRET класс, включая приватные данные, без `request_egress_authorized=True`. `mistral_external` остаётся на `EXTERNAL` и по-прежнему требует буквальный `request_egress_authorized=True`. При `request_egress_authorized=False` в план входят `vm100_local_ollama` и `gpu_ollama`; `mistral_external` недоступен.
+> `gpu_ollama` находится на границе `INTERNAL_TRUSTED`. Планировщик и транспортный шлюз используют одно решение: любой допустимый не-SECRET класс, включая приватные данные, проходит без `request_egress_authorized=True`. `mistral_external` (`EXTERNAL`) и `UNKNOWN_BOUNDARY` по-прежнему требуют буквальный `True`. Подмена endpoint на не-loopback адрес по-прежнему требует этот флаг и для `LOCAL_SAME_HOST`, и для `INTERNAL_TRUSTED`. `SECRET` запрещён на любой границе.
 
 ```python
 from ai_core.executor import execute_chat, execute_prompt

@@ -135,6 +135,8 @@ class SingleLoopRuntime:
                 timeout_seconds=attempt_timeout,
                 extra_options=request.extra_options,
                 request_egress_authorized=request.request_egress_authorized,
+                data_class=request.data_class,
+                outbound_form=request.outbound_form,
             )
 
             result = execute_transport_attempt(

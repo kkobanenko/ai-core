@@ -30,8 +30,8 @@ from ai_core.health import (
     ProviderHealthStatus,
     ProviderHealthStore,
 )
+from ai_core.privacy import DataClass, OutboundForm, is_egress_eligible
 from ai_core.provider_catalog import (
-    NetworkBoundary,
     UnknownProviderIdentityError,
     get_provider_identity,
 )
@@ -66,6 +66,9 @@ class TransportRequest:
     api_key: str | None = None
     extra_options: Mapping[str, Any] = field(default_factory=dict)
     request_egress_authorized: bool = False
+    # Те же поля, что у планировщика. Дефолт совпадает с ExecutionRequest.
+    data_class: DataClass = DataClass.PUBLIC_NO_PII
+    outbound_form: OutboundForm = OutboundForm.RAW
 
 
 @dataclass(frozen=True)
@@ -390,11 +393,22 @@ def execute_transport_attempt(
     target_endpoint = raw_endpoint if isinstance(raw_endpoint, str) else None
 
     identity = get_provider_identity(request.candidate.provider_id)
-    requires_egress = (
-        identity.network_boundary is not NetworkBoundary.LOCAL_SAME_HOST
-        or not is_local_loopback_endpoint(target_endpoint)
+    # Планировщик и транспорт вызывают одну функцию.
+    # SECRET запрещён. INTERNAL_TRUSTED и LOCAL_SAME_HOST не требуют флаг.
+    # EXTERNAL и UNKNOWN_BOUNDARY требуют буквальный True.
+    privacy_allows = is_egress_eligible(
+        data_class=request.data_class,
+        outbound_form=request.outbound_form,
+        network_boundary=identity.network_boundary,
+        request_egress_authorized=request.request_egress_authorized,
     )
-    if requires_egress and request.request_egress_authorized is not True:
+    # Подмена endpoint на чужой хост остаётся запрещённой без literal True.
+    # Правило одинаковое для LOCAL_SAME_HOST и INTERNAL_TRUSTED.
+    endpoint_stays_on_loopback = is_local_loopback_endpoint(target_endpoint)
+    endpoint_allows = (
+        endpoint_stays_on_loopback or request.request_egress_authorized is True
+    )
+    if not privacy_allows or not endpoint_allows:
         raise EgressNotAuthorizedError(
             f"External network egress not authorized for provider '{request.candidate.provider_id}' "
             f"(target endpoint '{target_endpoint}' requires egress authorization)"
