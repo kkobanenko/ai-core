@@ -285,8 +285,8 @@ def test_7_custom_runtime_shares_health_store_with_router() -> None:
 
 
 def test_8_package_version_and_nine_symbol_invariant() -> None:
-    """Audit Finding 8: ai_core.__version__ is 0.3.1 and root __all__ invariant is preserved."""
-    assert getattr(ai_core, "__version__", None) == "0.3.1"
+    """Audit Finding 8: ai_core.__version__ is 0.3.2 and root __all__ invariant is preserved."""
+    assert getattr(ai_core, "__version__", None) == "0.3.2"
     assert len(ai_core.__all__) == 9
 
 
