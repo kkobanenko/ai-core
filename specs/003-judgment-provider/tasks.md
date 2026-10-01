@@ -2,9 +2,8 @@
 
 **Authority**: `spec.md` and `plan.md`.
 
-**Package type**: DOCS_ONLY_DESIGN. The unchecked tasks below are a future,
-separately authorized J1 implementation checklist. They do not authorize
-runtime changes in this package.
+**Package type**: J1 `contract_only` implementation checklist (ADR-023,
+`AUTHORIZE_J1_CONTRACT_ONLY`). Catalog promotion and real adapters remain J2+.
 
 ## J1 prerequisites
 
@@ -22,19 +21,19 @@ runtime changes in this package.
 
 ## J1 contract and validation
 
-- [ ] **J002 — Define immutable typed judgment values**
-  - **Inputs**: `JudgmentRequest`, `JudgmentResponse`, `Choice`, `Score`,
-    `Noul`, decision-pack reference, exact provider/model/version pin, and
-    total deadline requirements from `spec.md`.
+- [x] **J002 — Define immutable typed judgment values**
+  - **Inputs**: `JudgmentRequest`, `JudgmentResponse`, `Binary`/`Choice`/`Score`
+    question/answer variants, decision-pack reference, exact provider/model/version
+    pin, and total deadline requirements from `spec.md`.
   - **Changed surfaces**: future `judgment_contracts` module and focused unit
     tests.
-  - **Deterministic acceptance**: exactly one result variant is representable;
-    a choice is declared; a score is finite and within its declared scale; a
-    `Noul` cannot encode an implicit choice; exact pins reject `*-latest`.
+  - **Deterministic acceptance**: batch answers map 1:1 to questions; variants
+    match; binary probability stays in `[0,1]` without bool coercion; exact pins
+    reject `*-latest`.
   - **STOP**: the proposed API becomes a text-completion, JSON-mode, or
     untyped-dictionary interface.
 
-- [ ] **J003 — Validate requests before execution**
+- [x] **J003 — Validate requests before execution**
   - **Inputs**: typed values from J002 and consumer-owned decision-pack
     metadata.
   - **Changed surfaces**: future `judgment_validation` module and invalid-input
@@ -46,7 +45,7 @@ runtime changes in this package.
   - **STOP**: validation needs a consumer threshold, data set, or business
     decision outside the typed contract.
 
-- [ ] **J004 — Validate provider responses before consumer visibility**
+- [x] **J004 — Validate provider responses before consumer visibility**
   - **Inputs**: typed request, proposed response variant, and
     provider-neutral error taxonomy.
   - **Changed surfaces**: future `judgment_validation` and
@@ -71,7 +70,7 @@ runtime changes in this package.
   - **STOP**: the change would alter existing v0.3.1 provider identities,
     aliases, or behavior without separate approval.
 
-- [ ] **J006 — Enforce privacy and egress before transport**
+- [x] **J006 — Enforce privacy and egress before transport**
   - **Inputs**: request classification, provider boundary, egress
     authorization, hosted-Jev and local-provider constraints.
   - **Changed surfaces**: future judgment privacy gate and ordering tests with
@@ -84,7 +83,7 @@ runtime changes in this package.
   - **STOP**: zero-data-retention is assumed without evidence, a sensitive
     local flow requires hosted fallback, or ordering cannot be tested.
 
-- [ ] **J007 — Implement one bounded execution loop**
+- [x] **J007 — Implement one bounded execution loop**
   - **Inputs**: normalized errors, a monotonic total deadline, and
     policy-permitted candidate order.
   - **Changed surfaces**: future `judgment_runtime` module and fake-clock
@@ -96,12 +95,12 @@ runtime changes in this package.
   - **STOP**: an adapter, transport, or consumer introduces a nested retry or
     separate deadline.
 
-- [ ] **J008 — Add only the deterministic test mock**
+- [x] **J008 — Add only the deterministic test mock**
   - **Inputs**: validated contract and the one-loop execution boundary.
   - **Changed surfaces**: future `mock_judgment` module and contract/failure
     tests.
-  - **Deterministic acceptance**: the mock produces declared choice, score,
-    `Noul`, timeout, rate-limit, unavailable, and invalid-response fixtures
+  - **Deterministic acceptance**: the mock produces declared binary, choice,
+    score, timeout, rate-limit, unavailable, and invalid-response fixtures
     without credentials or network access; it cannot be selected as a
     production provider.
   - **STOP**: the task requires an SDK, external endpoint, credential, or
@@ -109,7 +108,7 @@ runtime changes in this package.
 
 ## J1 evidence and review
 
-- [ ] **J009 — Prove serialization and telemetry exclusions**
+- [x] **J009 — Prove serialization and telemetry exclusions**
   - **Inputs**: typed contract metadata and telemetry allowlist.
   - **Changed surfaces**: future serialization/telemetry helpers and focused
     tests.
