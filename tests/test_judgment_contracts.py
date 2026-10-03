@@ -1183,3 +1183,51 @@ def test_round_3_reject_unknown_fields_in_nested_score_and_scale() -> None:
     req_doc["score_scale"] = {"score_id": "fit", "minimum": 0.0, "maximum": 1.0, "extra": 123}
     with pytest.raises(ValueError, match="score_scale must only contain score_id, minimum, and maximum"):
         request_from_json(json.dumps(req_doc))
+
+
+def test_round_4_privacy_denial_precedes_decision_pack_lookup() -> None:
+    """Prove that SECRET data is denied with PRIVACY_EGRESS_DENIED before calling decision_pack_known."""
+    called = False
+
+    def resolver(pack_id: str, version: str) -> bool:
+        nonlocal called
+        called = True
+        return False
+
+    req = _request(data_class=DataClass.SECRET)
+    res = invoke_judgment(req, decision_pack_known=resolver, clock=_clock(1.0))
+    assert res.error is JudgmentErrorCategory.PRIVACY_EGRESS_DENIED
+    assert called is False
+
+
+def test_round_4_payload_bounded_acyclic_json_shape() -> None:
+    """Prove that cyclical, deep, or non-JSON payloads return INVALID_REQUEST without RecursionError."""
+    # Self-referential list
+    cyclic_list: list = []
+    cyclic_list.append(cyclic_list)
+    req_cyclic_list = _request(payload=cyclic_list)
+    res_list = invoke_judgment(req_cyclic_list, clock=_clock(1.0))
+    assert res_list.error is JudgmentErrorCategory.INVALID_REQUEST
+
+    # Self-referential dict
+    cyclic_dict: dict = {}
+    cyclic_dict["self"] = cyclic_dict
+    req_cyclic_dict = _request(payload=cyclic_dict)
+    res_dict = invoke_judgment(req_cyclic_dict, clock=_clock(1.0))
+    assert res_dict.error is JudgmentErrorCategory.INVALID_REQUEST
+
+    # Non-JSON type (tuple)
+    req_tuple = _request(payload={"key": (1, 2, 3)})
+    res_tuple = invoke_judgment(req_tuple, clock=_clock(1.0))
+    assert res_tuple.error is JudgmentErrorCategory.INVALID_REQUEST
+
+    # Deep tree exceeding max depth
+    deep: dict = {"level": 0}
+    curr = deep
+    for i in range(1, 40):
+        nxt: dict = {"level": i}
+        curr["child"] = nxt
+        curr = nxt
+    req_deep = _request(payload=deep)
+    res_deep = invoke_judgment(req_deep, clock=_clock(1.0))
+    assert res_deep.error is JudgmentErrorCategory.INVALID_REQUEST

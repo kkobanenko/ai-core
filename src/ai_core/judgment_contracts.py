@@ -226,7 +226,7 @@ def invoke_judgment(
         return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
     try:
         invalid = _request_error(request)
-    except (AttributeError, TypeError, OverflowError):
+    except (AttributeError, TypeError, OverflowError, RecursionError):
         return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
     if invalid is not None:
         return _unvalidated_error(invalid, _safe_latency(started, clock))
@@ -236,6 +236,9 @@ def invoke_judgment(
     # mock_judgment имеет фиксированную доверенную границу LOCAL_SAME_HOST без hosted_boundary
     if request.network_boundary is not NetworkBoundary.LOCAL_SAME_HOST or request.hosted_boundary:
         return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
+    # Привратник приватности проверяется ДО обращения к резолверу decision-pack
+    if not _privacy_allows(request):
+        return _error_response(request, JudgmentErrorCategory.PRIVACY_EGRESS_DENIED, _safe_latency(started, clock))
     dp_now = _safe_now(clock)
     if not _open_at(request, dp_now):
         return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency_from(started, dp_now))
@@ -248,8 +251,6 @@ def invoke_judgment(
         dp_ok = False
     if not dp_ok:
         return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
-    if not _privacy_allows(request):
-        return _error_response(request, JudgmentErrorCategory.PRIVACY_EGRESS_DENIED, _safe_latency(started, clock))
     try:
         from ai_core.judgment_mock import DeterministicMockJudgmentProvider, MockBehavior
         behavior = mock_behavior if isinstance(mock_behavior, MockBehavior) else MockBehavior()
@@ -621,7 +622,7 @@ def _request_error(request: JudgmentRequest) -> JudgmentErrorCategory | None:
         return JudgmentErrorCategory.INVALID_REQUEST
     if request.score_scale is not None and not _scale_ok(request.score_scale):
         return JudgmentErrorCategory.INVALID_REQUEST
-    if request.payload is not None and not _payload_finite(request.payload):
+    if request.payload is not None and not _is_valid_payload_shape(request.payload):
         return JudgmentErrorCategory.INVALID_REQUEST
     # Флаг hosted не может объявить внешнюю границу локальной.
     if request.hosted_boundary is True and request.network_boundary is not NetworkBoundary.EXTERNAL:
@@ -629,19 +630,66 @@ def _request_error(request: JudgmentRequest) -> JudgmentErrorCategory | None:
     return None
 
 
-def _payload_finite(value: object) -> bool:
-    """Проверка отсутствия NaN/Infinity/переполняющих int в структуре payload."""
-    if isinstance(value, bool):
+_MAX_PAYLOAD_DEPTH = 32
+_MAX_PAYLOAD_NODES = 2048
+
+
+def _is_valid_payload_shape(value: object) -> bool:
+    """Проверка, что payload является ограниченным ацикличным JSON-деревом без нестандартных типов и NaN/Inf."""
+    if value is None:
         return True
-    if isinstance(value, float):
-        return math.isfinite(value)
-    if isinstance(value, int):
-        return value.bit_length() <= 1023
-    if isinstance(value, dict):
-        return all(type(k) is str and _payload_finite(v) for k, v in value.items())
-    if isinstance(value, (list, tuple)):
-        return all(_payload_finite(v) for v in value)
-    return True
+    seen_ids: set[int] = set()
+    node_count = 0
+
+    def _check(item: object, depth: int) -> bool:
+        nonlocal node_count
+        node_count += 1
+        if node_count > _MAX_PAYLOAD_NODES:
+            return False
+        if depth > _MAX_PAYLOAD_DEPTH:
+            return False
+        if item is None:
+            return True
+        if type(item) is bool:
+            return True
+        if type(item) is str:
+            return True
+        if type(item) is int:
+            return item.bit_length() <= 1023
+        if type(item) is float:
+            return math.isfinite(item)
+        if type(item) is list:
+            item_id = id(item)
+            if item_id in seen_ids:
+                return False
+            seen_ids.add(item_id)
+            try:
+                for elem in item:
+                    if not _check(elem, depth + 1):
+                        return False
+            finally:
+                seen_ids.remove(item_id)
+            return True
+        if type(item) is dict:
+            item_id = id(item)
+            if item_id in seen_ids:
+                return False
+            seen_ids.add(item_id)
+            try:
+                for k, v in item.items():
+                    if type(k) is not str:
+                        return False
+                    if not _check(v, depth + 1):
+                        return False
+            finally:
+                seen_ids.remove(item_id)
+            return True
+        return False
+
+    try:
+        return _check(value, 0)
+    except (RecursionError, OverflowError):
+        return False
 
 
 def _scale_ok(scale: object) -> bool:
