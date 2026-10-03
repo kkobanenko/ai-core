@@ -53,10 +53,14 @@ remain J2-or-later work.
 - This plan does not authorize provider admission, deployment, consumer
   migration, release, or automatic action.
 
-## Proposed module boundaries
+## Module boundaries
 
-The following boundaries are proposed for a future J1 implementation. They do
-not create files in this package.
+`src/ai_core/judgment_contracts.py` now holds the authorized callable contract:
+typed request/response, validation, normalized errors, privacy/egress check,
+one deadline, and metadata-only telemetry. Rollback of that file is a revert
+of its commit. The rows below that are not that file are still future work.
+This authorization does not create them, and it does not create provider
+network execution.
 
 | Proposed surface | Single responsibility |
 | --- | --- |
@@ -146,7 +150,6 @@ handled later as a fail-neutral protocol for consumers and is not part of J1.
 
 ## Rollback
 
-This package is documentation only: rollback is a revert of its documentation
-commit. A future J1 implementation must make its own rollback plan before it
-changes any runtime surface. No provider, credential, deployment, or consumer
-state is introduced here.
+Rollback of the callable contract is a revert of `src/ai_core/judgment_contracts.py`
+and its tests. No provider credential, deployment, consumer state, or network
+execution is introduced. J2 and catalog admission stay unauthorized.

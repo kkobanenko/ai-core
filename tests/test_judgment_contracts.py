@@ -40,10 +40,10 @@ def _known_pack(pack_id: str, version: str) -> bool:
     return pack_id == "pack-1" and version == "1"
 
 
-def invoke_judgment(request, provider=None, **kwargs):
+def invoke_judgment(request, **kwargs):
     """Тесты знают pack-1/1. Явный resolver, включая None, не подменяется."""
     kwargs.setdefault("decision_pack_known", _known_pack)
-    return _invoke_judgment(request, provider, **kwargs)
+    return _invoke_judgment(request, **kwargs)
 
 
 class SpyProvider:
@@ -470,12 +470,17 @@ def test_r2_late_choice_is_deadline_exhausted() -> None:
 
         def __call__(self) -> float:
             self.reads += 1
-            # Два чтения до вызова провайдера остаются внутри срока.
-            if self.reads <= 2:
+            # Старт, срок до фабрики и срок после фабрики остаются внутри.
+            if self.reads <= 3:
                 return 10.0
             return 500.0
 
-    response = invoke_judgment(_request(deadline_monotonic=100.0), SpyProvider(_choice()), clock=Clock())
+    late = SpyProvider(_choice())
+    response = invoke_judgment(
+        _request(deadline_monotonic=100.0),
+        provider_factory=late.factory,
+        clock=Clock(),
+    )
     assert response.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
     assert response.choice is None
     assert "yes" not in response_to_json(response)
@@ -667,22 +672,22 @@ def test_c2_deadline_covers_validation() -> None:
 
     late_validation = invoke_judgment(
         _request(deadline_monotonic=1.0),
-        SpyProvider(_choice()),
-        clock=SequenceClock([0.0, 0.0, 0.9, 1.1]),
+        provider_factory=SpyProvider(_choice()).factory,
+        clock=SequenceClock([0.0, 0.0, 0.4, 0.9, 1.1]),
     )
     assert late_validation.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
     assert late_validation.choice is None
     late_provider = invoke_judgment(
         _request(deadline_monotonic=1.0),
-        SpyProvider(_choice()),
-        clock=SequenceClock([0.0, 0.0, 1.2, 1.3]),
+        provider_factory=SpyProvider(_choice()).factory,
+        clock=SequenceClock([0.0, 0.0, 0.4, 1.2, 1.3]),
     )
     assert late_provider.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
     assert "yes" not in response_to_json(late_provider)
     on_time = invoke_judgment(
         _request(deadline_monotonic=5.0),
-        SpyProvider(_choice()),
-        clock=SequenceClock([0.0, 0.0, 0.2, 0.4]),
+        provider_factory=SpyProvider(_choice()).factory,
+        clock=SequenceClock([0.0, 0.0, 0.1, 0.2, 0.4]),
     )
     assert on_time.choice == Choice("yes")
 
@@ -929,7 +934,11 @@ def test_e3_invalid_clock_fails_closed() -> None:
         assert response.choice is None
         assert fixture.built == 0
         assert fixture.calls == 0
-    zero = invoke_judgment(_request(deadline_monotonic=1.0), SpyProvider(_choice()), clock=lambda: 0.0)
+    zero = invoke_judgment(
+        _request(deadline_monotonic=1.0),
+        provider_factory=SpyProvider(_choice()).factory,
+        clock=lambda: 0.0,
+    )
     assert zero.choice == Choice("yes")
 
 
@@ -987,7 +996,7 @@ def test_f1_trusted_provider_boundary_is_authoritative() -> None:
     assert local_as_external.built == 0
     consistent = invoke_judgment(
         _request(provider=LOCAL_PROVIDER, network_boundary=NetworkBoundary.LOCAL_SAME_HOST),
-        SpyProvider(_choice()),
+        provider_factory=SpyProvider(_choice()).factory,
         clock=_clock(1.0),
     )
     assert consistent.choice == Choice("yes")
@@ -1014,6 +1023,8 @@ def test_f2_authorization_docs_match_remote_truth() -> None:
     assert "contract_only" in combined
     assert "current state `HOLD_J1`" not in combined
     assert "current state remains `HOLD_J1`" not in combined
+    assert "documentation only" not in plan.lower()
+    assert "do not create files in this package" not in plan.lower()
     assert "DOCS_ONLY_DESIGN" not in tasks
     assert (root / "src/ai_core/judgment_contracts.py").is_file()
 
@@ -1127,3 +1138,58 @@ def test_f4_hostile_identity_equality_does_not_escape() -> None:
         assert response.error is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
         with pytest.raises(ValueError):
             response_to_json(hostile)
+
+
+def test_g1_factory_starts_only_after_privacy() -> None:
+    order: list[str] = []
+
+    class Tracking:
+        def __init__(self) -> None:
+            order.append("construct")
+
+        def judge(self, request: JudgmentRequest) -> JudgmentResponse:
+            order.append("judge")
+            return _choice(provider=EXTERNAL_PROVIDER)
+
+    def factory() -> Tracking:
+        return Tracking()
+
+    denied = invoke_judgment(
+        _request(
+            provider=EXTERNAL_PROVIDER,
+            network_boundary=NetworkBoundary.EXTERNAL,
+            data_class=DataClass.SECRET,
+            request_egress_authorized=True,
+            hosted_boundary=True,
+        ),
+        provider_factory=factory,
+        clock=_clock(1.0),
+    )
+    assert denied.error is JudgmentErrorCategory.PRIVACY_EGRESS_DENIED
+    assert order == []
+    allowed = invoke_judgment(
+        _request(
+            provider=EXTERNAL_PROVIDER,
+            network_boundary=NetworkBoundary.EXTERNAL,
+            data_class=DataClass.SYNTHETIC,
+            request_egress_authorized=True,
+            hosted_boundary=True,
+        ),
+        provider_factory=factory,
+        clock=_clock(1.0),
+    )
+    assert allowed.choice == Choice("yes")
+    assert order == ["construct", "judge"]
+
+
+def test_g2_clock_callback_exceptions_fail_closed() -> None:
+    for kind in (RuntimeError, OSError):
+        fixture = SpyProvider(_choice())
+
+        def clock() -> float:
+            raise kind("clock")
+
+        response = invoke_judgment(_request(), provider_factory=fixture.factory, clock=clock)
+        assert response.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
+        assert fixture.built == 0
+        assert fixture.calls == 0

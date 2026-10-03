@@ -209,7 +209,6 @@ class JudgmentProvider(Protocol):
 
 def invoke_judgment(
     request: JudgmentRequest,
-    provider: JudgmentProvider | None = None,
     *,
     provider_factory: Callable[[], JudgmentProvider] | None = None,
     clock: Callable[[], float] = time.monotonic,
@@ -240,14 +239,13 @@ def invoke_judgment(
     if not _deadline_open(request, clock):
         return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _safe_latency(started, clock))
     try:
-        active = provider if provider is not None else None
-        if active is None:
-            if provider_factory is None:
-                return _error_response(request, JudgmentErrorCategory.INTERNAL_ERROR, _safe_latency(started, clock))
-            active = provider_factory()
-            # Фабрика могла съесть срок. judge после этого не стартует.
-            if not _deadline_open(request, clock):
-                return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _safe_latency(started, clock))
+        # Готовый объект не принимаем: его конструктор обошёл бы проверку приватности.
+        if provider_factory is None:
+            return _error_response(request, JudgmentErrorCategory.INTERNAL_ERROR, _safe_latency(started, clock))
+        active = provider_factory()
+        # Фабрика могла съесть срок. judge после этого не стартует.
+        if not _deadline_open(request, clock):
+            return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _safe_latency(started, clock))
         raw = active.judge(request)
     except Exception:
         # Текст исключения наружу не отдаём: в нём может быть нагрузка.
@@ -959,7 +957,8 @@ def _safe_now(clock: Callable[[], float]) -> float | None:
     """Конечное монотонное время. Невалидные часы — это None, не ноль."""
     try:
         value = clock()
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
+        # Часы — внешний callback. Любой обычный сбой значит «время неизвестно».
         return None
     if not _finite_number(value):
         return None
