@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from pathlib import Path
 
 import pytest
@@ -673,21 +674,21 @@ def test_c2_deadline_covers_validation() -> None:
     late_validation = invoke_judgment(
         _request(deadline_monotonic=1.0),
         provider_factory=SpyProvider(_choice()).factory,
-        clock=SequenceClock([0.0, 0.0, 0.4, 0.9, 1.1]),
+        clock=SequenceClock([0.0, 0.0, 0.4, 1.1]),
     )
     assert late_validation.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
     assert late_validation.choice is None
     late_provider = invoke_judgment(
         _request(deadline_monotonic=1.0),
         provider_factory=SpyProvider(_choice()).factory,
-        clock=SequenceClock([0.0, 0.0, 0.4, 1.2, 1.3]),
+        clock=SequenceClock([0.0, 0.0, 0.4, 1.2]),
     )
     assert late_provider.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
     assert "yes" not in response_to_json(late_provider)
     on_time = invoke_judgment(
         _request(deadline_monotonic=5.0),
         provider_factory=SpyProvider(_choice()).factory,
-        clock=SequenceClock([0.0, 0.0, 0.1, 0.2, 0.4]),
+        clock=SequenceClock([0.0, 0.0, 0.1, 0.4]),
     )
     assert on_time.choice == Choice("yes")
 
@@ -1193,3 +1194,50 @@ def test_g2_clock_callback_exceptions_fail_closed() -> None:
         assert response.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
         assert fixture.built == 0
         assert fixture.calls == 0
+
+
+def test_h2_blocking_judge_returns_before_hang() -> None:
+    class Slow:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def judge(self, request: JudgmentRequest) -> JudgmentResponse:
+            self.calls += 1
+            time.sleep(2)
+            return _choice()
+
+    slow = Slow()
+    started = time.monotonic()
+    response = invoke_judgment(
+        _request(deadline_monotonic=started + 0.1),
+        provider_factory=lambda: slow,
+    )
+    elapsed = time.monotonic() - started
+    assert response.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
+    assert response.choice is None
+    assert elapsed < 1.5
+
+
+def test_h3_latency_is_measured_after_validation() -> None:
+    class SequenceClock:
+        def __init__(self, values: list[float]) -> None:
+            self.values = list(values)
+
+        def __call__(self) -> float:
+            return self.values.pop(0)
+
+    success = invoke_judgment(
+        _request(deadline_monotonic=5.0),
+        provider_factory=SpyProvider(_choice()).factory,
+        clock=SequenceClock([0.0, 0.0, 0.0, 0.3]),
+    )
+    assert success.choice == Choice("yes")
+    assert success.telemetry.latency_ms == 300
+    late = invoke_judgment(
+        _request(deadline_monotonic=1.0),
+        provider_factory=SpyProvider(_choice()).factory,
+        clock=SequenceClock([0.0, 0.0, 0.0, 1.5]),
+    )
+    assert late.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
+    assert late.choice is None
+    assert late.telemetry.latency_ms == 1500

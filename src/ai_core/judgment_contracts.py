@@ -10,6 +10,7 @@ import json
 import math
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Protocol
@@ -244,21 +245,27 @@ def invoke_judgment(
             return _error_response(request, JudgmentErrorCategory.INTERNAL_ERROR, _safe_latency(started, clock))
         active = provider_factory()
         # Фабрика могла съесть срок. judge после этого не стартует.
-        if not _deadline_open(request, clock):
-            return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _safe_latency(started, clock))
-        raw = active.judge(request)
+        ready = _safe_now(clock)
+        if not _open_at(request, ready):
+            return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency_from(started, ready))
+        raw = _judge_within_deadline(active, request, ready)
+    except FutureTimeoutError:
+        # judge не вернулся до срока. Его результат наружу не отдаём.
+        timed_out = _safe_now(clock)
+        return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency_from(started, timed_out))
     except Exception:
         # Текст исключения наружу не отдаём: в нём может быть нагрузка.
         return _error_response(request, JudgmentErrorCategory.INTERNAL_ERROR, _safe_latency(started, clock))
-    latency = _safe_latency(started, clock)
     try:
-        checked = _checked_provider_result(request, raw, latency)
+        checked = _checked_provider_result(request, raw, 0)
     except (AttributeError, TypeError):
-        checked = _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency)
-    # Последняя проверка срока. После неё результат только отдаётся.
-    if not _deadline_open(request, clock):
+        checked = _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, 0)
+    # Срок и latency читаются после проверки ответа, одним значением часов.
+    finished = _safe_now(clock)
+    latency = _latency_from(started, finished)
+    if not _open_at(request, finished):
         return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, latency)
-    return checked
+    return _with_latency(checked, latency)
 
 
 def request_to_json(request: JudgmentRequest) -> str:
@@ -707,7 +714,10 @@ def _privacy_allows(request: JudgmentRequest) -> bool:
 
 
 def _deadline_open(request: JudgmentRequest, clock: Callable[[], float]) -> bool:
-    now = _safe_now(clock)
+    return _open_at(request, _safe_now(clock))
+
+
+def _open_at(request: JudgmentRequest, now: float | None) -> bool:
     if now is None or not _finite_number(request.deadline_monotonic):
         return False
     try:
@@ -715,6 +725,59 @@ def _deadline_open(request: JudgmentRequest, clock: Callable[[], float]) -> bool
     except OverflowError:
         return False
     return now < deadline
+
+
+def _latency_from(started: float | None, now: float | None) -> int:
+    if now is None or started is None:
+        return 0
+    elapsed = now - started
+    if elapsed < 0:
+        return 0
+    return int(elapsed * 1000)
+
+
+def _judge_within_deadline(active: JudgmentProvider, request: JudgmentRequest, now: float) -> object:
+    """Ждём judge только оставшийся срок. Опоздавший результат не читаем."""
+    try:
+        remaining = float(request.deadline_monotonic) - now
+    except OverflowError:
+        remaining = 0.0
+    if remaining <= 0:
+        raise FutureTimeoutError()
+    # Один рабочий поток. Отмена не убивает уже начатый judge, но ожидание кончается.
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(active.judge, request)
+    try:
+        return future.result(timeout=remaining)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _with_latency(response: JudgmentResponse, latency_ms: int) -> JudgmentResponse:
+    telemetry = response.telemetry
+    stamped = JudgmentTelemetry(
+        telemetry.outcome,
+        telemetry.error_category,
+        latency_ms,
+        telemetry.retry_count,
+        telemetry.provider,
+        telemetry.model,
+        telemetry.model_version,
+        telemetry.decision_pack_id,
+        telemetry.decision_pack_version,
+    )
+    return JudgmentResponse(
+        provider=response.provider,
+        model=response.model,
+        model_version=response.model_version,
+        decision_pack_id=response.decision_pack_id,
+        decision_pack_version=response.decision_pack_version,
+        telemetry=stamped,
+        choice=response.choice,
+        score=response.score,
+        noul=response.noul,
+        error=response.error,
+    )
 
 
 def _checked_provider_result(request: JudgmentRequest, raw: object, latency_ms: int) -> JudgmentResponse:
