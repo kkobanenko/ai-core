@@ -1,8 +1,6 @@
-"""Deterministic J1 mock execution. Test-only. Not a production provider.
+"""Детерминированный мок J1. Только тесты. Не провайдер каталога.
 
-This module provides mock_judgment execution for J1 contract tests.
-No network. No credentials. No provider SDK. Not catalog-admitted.
-Protocol conformance != execution admission.
+Сети, секретов, SDK и произвольного callback здесь нет.
 """
 
 from __future__ import annotations
@@ -10,28 +8,28 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable
 
 from ai_core.judgment_contracts import (
-    Choice,
+    BinaryAnswer,
+    BinaryQuestion,
+    ChoiceAnswer,
+    ChoiceQuestion,
     JudgmentErrorCategory,
     JudgmentOutcome,
     JudgmentRequest,
     JudgmentResponse,
     JudgmentTelemetry,
-    Noul,
-    NoulReason,
-    Score,
+    ScoreAnswer,
+    ScoreQuestion,
 )
 
 MOCK_PROVIDER_ID = "mock_judgment"
 
 
 class MockVariant(str, Enum):
-    """Declared mock result variant."""
+    """Какой фиктивный результат собрать."""
 
-    CHOICE = "choice"
-    NOUL = "noul"
+    SUCCESS = "success"
     ERROR = "error"
     INVALID_RESPONSE = "invalid_response"
     TIMEOUT = "timeout"
@@ -39,127 +37,91 @@ class MockVariant(str, Enum):
 
 @dataclass(frozen=True)
 class MockBehavior:
-    """Bounded, deterministic mock behavior fixture. Data only, not executable code."""
+    """Данные поведения мока. Это не исполняемый код потребителя."""
 
-    variant: MockVariant = MockVariant.CHOICE
-    choice_value: str | None = None
-    score: Score | None = None
-    noul_reason: NoulReason = NoulReason.NO_RELIABLE_JUDGMENT
+    variant: MockVariant = MockVariant.SUCCESS
     error_category: JudgmentErrorCategory = JudgmentErrorCategory.PROVIDER_UNAVAILABLE
     timeout_seconds: float = 0.05
-    invalid_provider_name: str | None = None
+    binary_probability: float = 1.0
 
 
 class DeterministicMockJudgmentProvider:
-    """Repository-owned deterministic mock judgment provider.
-
-    No network, no credentials, no subprocess, no environment lookup, no provider SDK.
-    """
+    """Репозиторный мок. Не ходит в сеть и не читает окружение."""
 
     def __init__(self, behavior: MockBehavior | None = None) -> None:
         self.behavior = behavior or MockBehavior()
 
     def judge(self, request: JudgmentRequest) -> JudgmentResponse:
-        b = self.behavior
-        if b.variant == MockVariant.TIMEOUT:
-            time.sleep(b.timeout_seconds)
-
-        if b.variant == MockVariant.INVALID_RESPONSE:
-            # Produce an invalid response (e.g. wrong provider or undeclared choice)
-            provider_name = b.invalid_provider_name or "unadmitted_foreign_provider"
-            tel = JudgmentTelemetry(
-                outcome=JudgmentOutcome.CHOICE,
-                error_category=None,
-                latency_ms=0,
-                retry_count=0,
-                provider=provider_name,
-                model=request.model,
-                model_version=request.model_version,
-                decision_pack_id=request.decision_pack_id,
-                decision_pack_version=request.decision_pack_version,
-            )
-            return JudgmentResponse(
-                provider=provider_name,
-                model=request.model,
-                model_version=request.model_version,
-                decision_pack_id=request.decision_pack_id,
-                decision_pack_version=request.decision_pack_version,
-                telemetry=tel,
-                choice=Choice(b.choice_value or "undeclared_choice_xyz"),
-            )
-
-        if b.variant == MockVariant.ERROR:
-            tel = JudgmentTelemetry(
-                outcome=JudgmentOutcome.ERROR,
-                error_category=b.error_category,
-                latency_ms=0,
-                retry_count=0,
-                provider=request.provider,
-                model=request.model,
-                model_version=request.model_version,
-                decision_pack_id=request.decision_pack_id,
-                decision_pack_version=request.decision_pack_version,
-            )
-            return JudgmentResponse(
-                provider=request.provider,
-                model=request.model,
-                model_version=request.model_version,
-                decision_pack_id=request.decision_pack_id,
-                decision_pack_version=request.decision_pack_version,
-                telemetry=tel,
-                error=b.error_category,
-            )
-
-        if b.variant == MockVariant.NOUL:
-            tel = JudgmentTelemetry(
-                outcome=JudgmentOutcome.NOUL,
-                error_category=None,
-                latency_ms=0,
-                retry_count=0,
-                provider=request.provider,
-                model=request.model,
-                model_version=request.model_version,
-                decision_pack_id=request.decision_pack_id,
-                decision_pack_version=request.decision_pack_version,
-            )
-            return JudgmentResponse(
-                provider=request.provider,
-                model=request.model,
-                model_version=request.model_version,
-                decision_pack_id=request.decision_pack_id,
-                decision_pack_version=request.decision_pack_version,
-                telemetry=tel,
-                noul=Noul(reason_code=b.noul_reason),
-            )
-
-        # CHOICE (default or TIMEOUT if returned before deadline)
-        choice_val = b.choice_value or (request.allowed_choices[0] if request.allowed_choices else "yes")
-        tel = JudgmentTelemetry(
-            outcome=JudgmentOutcome.CHOICE,
-            error_category=None,
-            latency_ms=0,
-            retry_count=0,
-            provider=request.provider,
-            model=request.model,
-            model_version=request.model_version,
-            decision_pack_id=request.decision_pack_id,
-            decision_pack_version=request.decision_pack_version,
-        )
-        return JudgmentResponse(
-            provider=request.provider,
-            model=request.model,
-            model_version=request.model_version,
-            decision_pack_id=request.decision_pack_id,
-            decision_pack_version=request.decision_pack_version,
-            telemetry=tel,
-            choice=Choice(value=choice_val),
-            score=b.score,
-        )
+        behavior = self.behavior
+        if behavior.variant is MockVariant.TIMEOUT:
+            time.sleep(behavior.timeout_seconds)
+        if behavior.variant is MockVariant.ERROR:
+            return _error_response(request, behavior.error_category)
+        if behavior.variant is MockVariant.INVALID_RESPONSE:
+            return _invalid_response(request)
+        return _success_response(request, behavior.binary_probability)
 
 
-__all__ = [
-    "DeterministicMockJudgmentProvider",
-    "MOCK_PROVIDER_ID",
-    "MockBehavior",
-    "MockVariant",
-]
+def _telemetry(request: JudgmentRequest, outcome: JudgmentOutcome, error: JudgmentErrorCategory | None) -> JudgmentTelemetry:
+    return JudgmentTelemetry(
+        outcome=outcome,
+        error_category=error,
+        latency_ms=0,
+        retry_count=0,
+        provider=request.provider,
+        model=request.model,
+        model_version=request.model_version,
+        decision_pack_id=request.decision_pack_id,
+        decision_pack_version=request.decision_pack_version,
+    )
+
+
+def _shell(request: JudgmentRequest, outcome: JudgmentOutcome, error: JudgmentErrorCategory | None) -> dict:
+    return {
+        "provider": request.provider,
+        "model": request.model,
+        "model_version": request.model_version,
+        "decision_pack_id": request.decision_pack_id,
+        "decision_pack_version": request.decision_pack_version,
+        "telemetry": _telemetry(request, outcome, error),
+    }
+
+
+def _error_response(request: JudgmentRequest, category: JudgmentErrorCategory) -> JudgmentResponse:
+    return JudgmentResponse(answers=None, error=category, **_shell(request, JudgmentOutcome.ERROR, category))
+
+
+def _invalid_response(request: JudgmentRequest) -> JudgmentResponse:
+    # Намеренно битый ответ: бинарная вероятность вне диапазона, если вопрос бинарный,
+    # иначе чужой вариант ответа.
+    answers = []
+    for name, question in request.questions:
+        if isinstance(question, BinaryQuestion):
+            answers.append((name, BinaryAnswer(2.0)))
+        else:
+            answers.append((name, BinaryAnswer(1.0)))
+    return JudgmentResponse(
+        answers=tuple(answers),
+        error=None,
+        **_shell(request, JudgmentOutcome.SUCCESS, None),
+    )
+
+
+def _success_response(request: JudgmentRequest, binary_probability: float) -> JudgmentResponse:
+    answers = []
+    for name, question in request.questions:
+        if isinstance(question, BinaryQuestion):
+            answers.append((name, BinaryAnswer(binary_probability)))
+        elif isinstance(question, ChoiceQuestion):
+            selected = question.choices[0]
+            probabilities = tuple(sorted((choice, 1.0 if choice == selected else 0.0) for choice in question.choices))
+            answers.append((name, ChoiceAnswer(selected, 1.0, probabilities)))
+        elif isinstance(question, ScoreQuestion):
+            selected = question.levels[0]
+            probabilities = tuple(sorted((level, 1.0 if level == selected else 0.0) for level in question.levels))
+            answers.append((name, ScoreAnswer(question.minimum, 1.0, probabilities)))
+    return JudgmentResponse(
+        answers=tuple(answers),
+        error=None,
+        **_shell(request, JudgmentOutcome.SUCCESS, None),
+    )

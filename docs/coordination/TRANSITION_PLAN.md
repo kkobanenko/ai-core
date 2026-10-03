@@ -80,4 +80,4 @@ v0.2.1: optional declared transient_paths with baseline + exact cleanup
         (e.g. uv.lock) — never silent ignore, never .gitignore for agent
 ```
 
-JudgmentProvider Spec Kit: [J1 contract authorized with mock-only execution; real provider execution requires future J2 governance](../../specs/003-judgment-provider/spec.md).
+JudgmentProvider Spec Kit: [J1 mock-only batch contract corrected to Binary/Choice/Score; real provider execution remains J2](../../specs/003-judgment-provider/spec.md).

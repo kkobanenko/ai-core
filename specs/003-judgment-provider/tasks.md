@@ -25,15 +25,16 @@ J2, provider network execution, or catalog admission.
 
 ## J1 contract and validation
 
-- [ ] **J002 — Define immutable typed judgment values**
-  - **Inputs**: `JudgmentRequest`, `JudgmentResponse`, `Choice`, `Score`,
-    `Noul`, decision-pack reference, exact provider/model/version pin, and
-    total deadline requirements from `spec.md`.
-  - **Changed surfaces**: future `judgment_contracts` module and focused unit
-    tests.
-  - **Deterministic acceptance**: exactly one result variant is representable;
-    a choice is declared; a score is finite and within its declared scale; a
-    `Noul` cannot encode an implicit choice; exact pins reject `*-latest`.
+- [x] **J002 — Define immutable typed judgment values**
+  - **Inputs**: batch `JudgmentRequest` / `JudgmentResponse`,
+    `BinaryQuestion` / `BinaryAnswer`, `ChoiceQuestion` / `ChoiceAnswer`,
+    `ScoreQuestion` / `ScoreAnswer`. Provider-neutral Noul is rejected by
+    `CORRECT_J1_CONTRACT_SEMANTICS_TYPESAFE_MAPPING`.
+  - **Changed surfaces**: `judgment_contracts` module and focused unit tests.
+  - **Deterministic acceptance**: one answer per named question; answer variant
+    matches the question; binary probability stays in [0, 1] with no boolean
+    conversion; choice and score distributions match declared keys and sum to
+    about 1; exact pins reject `latest`.
   - **STOP**: the proposed API becomes a text-completion, JSON-mode, or
     untyped-dictionary interface.
 

@@ -8,12 +8,19 @@ Recorded authorization, not a new one:
 `coordination/initiatives/platform-factory-global-roadmap/evidence/operator-decision-authorize-j1-contract-only.yaml`,
 task `PC-SEMANTIC-JUDGMENT-J1-AUTH-01`.
 
-That decision authorizes the callable provider-neutral contract: interface,
-`Choice`, `Score`, `Noul`, schemas, validation, deadline, normalized errors,
-privacy/egress boundary, version pins, metadata-only telemetry, and contract
-tests. It does not authorize J2, real Jev calls, credentials, provider network
-execution, deployment, consumer migration, runtime catalog promotion,
-production, live execution, or authoritative decisions.
+That decision authorizes the callable provider-neutral contract. A later
+correction on the same Remote Truth,
+`coordination/initiatives/platform-factory-global-roadmap/evidence/operator-decision-j1-contract-semantics-correction.yaml`,
+task `PC-SEMANTIC-JUDGMENT-J1-CONTRACT-CORRECTION-01`, decision
+`CORRECT_J1_CONTRACT_SEMANTICS_TYPESAFE_MAPPING`, replaces the mistaken
+provider-neutral Noul with a batch-first contract:
+
+`BinaryQuestion` / `BinaryAnswer` (`probability_true`), `ChoiceQuestion` /
+`ChoiceAnswer`, and `ScoreQuestion` / `ScoreAnswer`.
+
+TypeSafe `Noul` is not an ai-core term. In a future J2 mapping it means only
+`P(true)` on `BinaryAnswer`. It does not mean wait, unknown, or human review.
+J2, real provider execution, and deployment stay unauthorized.
 
 ## Problem statement
 
@@ -58,7 +65,7 @@ admission remains future work (J2+).
 | **JudgmentProvider** | A future typed interface that receives a validated judgment request and returns a validated judgment response. It is separate from text completion. |
 | **Choice** | A finite, decision-pack-defined symbolic outcome. The provider may select only one declared choice. |
 | **Score** | A bounded numeric assessment with declared scale and meaning. A score is evidence, not authorization. |
-| **Noul** | A typed neutral/unknown result that states the provider cannot produce a usable judgment. It is not a hidden fallback, inferred approval, or missing field. |
+| **BinaryAnswer** | `probability_true` in [0, 1]. ai-core does not turn that probability into a boolean. |
 | **decision pack** | A consumer-owned, versioned definition of question, allowed choices, score semantics, criteria, thresholds, deterministic rules, and evaluation evidence. |
 | **admitted behavior** | A provider/model/version/decision-pack combination accepted by a separate governance decision for a bounded use. |
 
