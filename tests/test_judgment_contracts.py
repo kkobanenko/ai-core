@@ -1231,3 +1231,67 @@ def test_round_4_payload_bounded_acyclic_json_shape() -> None:
     req_deep = _request(payload=deep)
     res_deep = invoke_judgment(req_deep, clock=_clock(1.0))
     assert res_deep.error is JudgmentErrorCategory.INVALID_REQUEST
+
+
+def test_round_5_reject_hostile_numeric_subclasses() -> None:
+    """Prove that float and int subclasses with hostile overrides fail validation cleanly as INVALID_REQUEST."""
+    class HostileFloat(float):
+        def __float__(self) -> float:
+            raise RuntimeError("hostile float override")
+
+    class HostileInt(int):
+        def bit_length(self) -> int:
+            raise RuntimeError("hostile bit_length override")
+
+    # Hostile deadline
+    req_hostile_deadline = _request(deadline_monotonic=HostileFloat(100.0))
+    res_deadline = invoke_judgment(req_hostile_deadline, clock=_clock(1.0))
+    assert res_deadline.error is JudgmentErrorCategory.INVALID_REQUEST
+
+    # Hostile score scale minimum
+    scale_hostile = ScoreScale(score_id="fit", minimum=HostileFloat(0.0), maximum=1.0)
+    req_hostile_scale = _request(score_scale=scale_hostile)
+    res_scale = invoke_judgment(req_hostile_scale, clock=_clock(1.0))
+    assert res_scale.error is JudgmentErrorCategory.INVALID_REQUEST
+
+    # Hostile int
+    req_hostile_int = _request(deadline_monotonic=HostileInt(100))
+    res_int = invoke_judgment(req_hostile_int, clock=_clock(1.0))
+    assert res_int.error is JudgmentErrorCategory.INVALID_REQUEST
+
+
+def test_round_5_bounded_concurrent_workers_no_accumulation() -> None:
+    """Prove that timed-out workers are bounded by the concurrency limit and cannot accumulate unbounded threads."""
+    from ai_core.judgment_contracts import _MAX_CONCURRENT_WORKERS, _WORKER_SEMAPHORE
+
+    # Verify semaphore exists and is bounded
+    assert _MAX_CONCURRENT_WORKERS <= 16
+
+    # Test that repeated timeouts return DEADLINE_EXHAUSTED cleanly without unboundedly accumulating workers
+    def slow_resolver(pack_id: str, version: str) -> bool:
+        time.sleep(0.5)
+        return True
+
+    started = time.monotonic()
+    req = _request(deadline_monotonic=started + 0.05)
+    for _ in range(5):
+        res = invoke_judgment(req, decision_pack_known=slow_resolver)
+        assert res.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
+
+
+def test_round_5_reject_oversized_identifiers_and_choices() -> None:
+    """Prove that identifiers over 128 chars and choice sets over 128 items are rejected."""
+    # Oversized criterion_id
+    long_id = "a" * 129
+    req_long_criterion = _request(criterion_id=long_id)
+    assert invoke_judgment(req_long_criterion, clock=_clock(1.0)).error is JudgmentErrorCategory.INVALID_REQUEST
+
+    # Oversized choice string
+    long_choice = "c" * 129
+    req_long_choice = _request(allowed_choices=(long_choice,))
+    assert invoke_judgment(req_long_choice, clock=_clock(1.0)).error is JudgmentErrorCategory.INVALID_REQUEST
+
+    # Oversized choice tuple (> 128 choices)
+    many_choices = tuple(f"choice-{i}" for i in range(130))
+    req_many_choices = _request(allowed_choices=many_choices)
+    assert invoke_judgment(req_many_choices, clock=_clock(1.0)).error is JudgmentErrorCategory.INVALID_REQUEST

@@ -298,8 +298,10 @@ def request_from_json(text: str) -> JudgmentRequest:
     if set(loaded) != _REQUEST_JSON_KEYS:
         raise ValueError("request JSON fields are not the closed set")
     choices = loaded.get("allowed_choices")
-    if not isinstance(choices, list) or any(type(item) is not str for item in choices):
-        raise ValueError("allowed_choices must be a list of strings")
+    if not isinstance(choices, list) or len(choices) == 0 or len(choices) > _MAX_ALLOWED_CHOICES:
+        raise ValueError("allowed_choices must be a bounded non-empty list of strings")
+    if any(type(item) is not str or len(item) == 0 or len(item) > _MAX_STRING_LENGTH for item in choices):
+        raise ValueError("allowed_choices must be a list of bounded non-empty strings")
     parsed = JudgmentRequest(
         request_id=_json_str(loaded.get("request_id"), "request_id"),
         decision_pack_id=_json_str(loaded.get("decision_pack_id"), "decision_pack_id"),
@@ -503,8 +505,8 @@ def _json_error_category(value: object) -> JudgmentErrorCategory | None:
 
 
 def _json_str(value: object, name: str) -> str:
-    if type(value) is not str or value.strip() == "":
-        raise ValueError(f"{name} must be a non-empty string")
+    if type(value) is not str or value.strip() == "" or len(value) > _MAX_STRING_LENGTH:
+        raise ValueError(f"{name} must be a non-empty string under {_MAX_STRING_LENGTH} characters")
     return value
 
 
@@ -583,6 +585,10 @@ def _json_error(value: object) -> JudgmentErrorCategory | None:
     return JudgmentErrorCategory(_json_str(value, "error"))
 
 
+_MAX_STRING_LENGTH = 128
+_MAX_ALLOWED_CHOICES = 128
+
+
 def _request_error(request: JudgmentRequest) -> JudgmentErrorCategory | None:
     if not isinstance(request, JudgmentRequest):
         return JudgmentErrorCategory.INVALID_REQUEST
@@ -595,16 +601,16 @@ def _request_error(request: JudgmentRequest) -> JudgmentErrorCategory | None:
         request.model,
         request.model_version,
     )
-    if any(type(item) is not str for item in names):
+    if any(type(item) is not str or len(item) == 0 or len(item) > _MAX_STRING_LENGTH for item in names):
         return JudgmentErrorCategory.INVALID_REQUEST
     if any(not _exact_pin(item) for item in names):
         return JudgmentErrorCategory.INVALID_REQUEST
     choices = request.allowed_choices
     if not isinstance(choices, tuple):
         return JudgmentErrorCategory.INVALID_REQUEST
-    if any(type(item) is not str for item in choices):
+    if len(choices) == 0 or len(choices) > _MAX_ALLOWED_CHOICES or len(set(choices)) != len(choices):
         return JudgmentErrorCategory.INVALID_REQUEST
-    if len(choices) == 0 or len(set(choices)) != len(choices):
+    if any(type(item) is not str or len(item) == 0 or len(item) > _MAX_STRING_LENGTH for item in choices):
         return JudgmentErrorCategory.INVALID_REQUEST
     if any(not _exact_pin(item) for item in choices):
         return JudgmentErrorCategory.INVALID_REQUEST
@@ -703,28 +709,31 @@ def _scale_ok(scale: object) -> bool:
 
 
 def _finite_number(value: object) -> bool:
-    """Конечное число. Огромный int не превращается в OverflowError."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
-    if isinstance(value, int) and value.bit_length() > 1023:
+    """Конечное число точного типа int или float без hostile overrides."""
+    if type(value) not in (int, float):
         return False
     try:
-        number = float(value)
-    except OverflowError:
+        if type(value) is int:
+            if value.bit_length() > 1023:
+                return False
+            return True
+        return math.isfinite(value)
+    except Exception:
         return False
-    return math.isfinite(number)
 
 
 def _nonnegative_int(value: object) -> bool:
     """Сначала тип. Потом знак. bool не является счётчиком."""
-    if isinstance(value, bool) or not isinstance(value, int):
+    if type(value) is not int:
         return False
     return value >= 0
 
 
 def _exact_pin(value: object) -> bool:
     """Точный литерал на всю строку. Селектор не проходит."""
-    if not isinstance(value, str):
+    if type(value) is not str:
+        return False
+    if len(value) == 0 or len(value) > _MAX_STRING_LENGTH:
         return False
     if _EXACT_PIN.fullmatch(value) is None:
         return False
@@ -833,9 +842,20 @@ def _latency_from(started: float | None, now: float | None) -> int:
     return int(elapsed * 1000)
 
 
+_MAX_CONCURRENT_WORKERS = 16
+_WORKER_SEMAPHORE = threading.Semaphore(_MAX_CONCURRENT_WORKERS)
+
+
 def _run_with_daemon_timeout(func: Callable, *args: object, timeout_seconds: float) -> object:
-    """Выполнить функцию в фоновом daemon-потоке с таймаутом без удержания зависших non-daemon воркеров."""
+    """Выполнить функцию в фоновом daemon-потоке с ограниченным пулом воркеров и таймаутом."""
     import threading
+    if timeout_seconds <= 0:
+        raise FutureTimeoutError()
+
+    acquired = _WORKER_SEMAPHORE.acquire(blocking=True, timeout=timeout_seconds)
+    if not acquired:
+        raise FutureTimeoutError()
+
     future: Future = Future()
 
     def worker() -> None:
@@ -846,6 +866,8 @@ def _run_with_daemon_timeout(func: Callable, *args: object, timeout_seconds: flo
         except BaseException as exc:
             if not future.done():
                 future.set_exception(exc)
+        finally:
+            _WORKER_SEMAPHORE.release()
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
