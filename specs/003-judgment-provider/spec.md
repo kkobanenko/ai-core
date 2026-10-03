@@ -97,7 +97,7 @@ not exact. A request never accepts `*-latest` for admitted behavior.
 - success: one `BinaryAnswer`, `ChoiceAnswer`, or `ScoreAnswer` for each requested question, in the same names and order;
 - `error`: a provider-neutral error classification, with `answers` absent.
 
-A binary answer carries `probability_true` in [0, 1] and is not converted to a boolean. A choice answer names a declared choice and a probability distribution over those choices. A score answer carries `expected_score` inside the declared scale and a distribution over declared levels. Invalid, incomplete, incompatible, or unparseable provider output is rejected before it reaches consumer logic.
+Named sequences keep JSON array order: questions, answers, and probability entries. Object keys stay sorted for determinism. A binary answer carries `probability_true` in [0, 1] and is not converted to a boolean. A choice answer names a declared choice and a probability distribution over those choices. A score answer carries `expected_score` inside the declared scale and a distribution over declared levels. Invalid, incomplete, incompatible, or unparseable provider output is rejected before it reaches consumer logic.
 
 ### Provider-neutral error taxonomy
 

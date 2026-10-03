@@ -102,6 +102,7 @@ _CHOICE_ANSWER_KEYS = frozenset({"kind", "selected_choice", "confidence", "proba
 _SCORE_ANSWER_KEYS = frozenset({"kind", "expected_score", "confidence", "probabilities"})
 _QUESTION_ENTRY_KEYS = frozenset({"name", "question"})
 _ANSWER_ENTRY_KEYS = frozenset({"name", "answer"})
+_PROBABILITY_ENTRY_KEYS = frozenset({"name", "probability"})
 
 
 class JudgmentErrorCategory(str, Enum):
@@ -1134,13 +1135,19 @@ def _json_answer(value: object) -> Answer:
 
 
 def _json_probability_pairs(value: object) -> tuple[tuple[str, float], ...]:
-    if type(value) is not dict:
-        raise ValueError("probabilities must be an object")
+    """Массив сохраняет порядок пар. Объект с sort_keys его ломает."""
+    if type(value) is not list:
+        raise ValueError("probabilities must be an ordered array")
+    if len(value) == 0 or len(value) > _MAX_DECLARED_OPTIONS:
+        raise ValueError("probabilities count is outside the bound")
     pairs: list[tuple[str, float]] = []
-    for key in value:
-        if type(key) is not str:
-            raise ValueError("probability key must be a string")
-        pairs.append((key, _json_number(value[key], "probability")))
+    for entry in value:
+        if type(entry) is not dict or set(entry) != _PROBABILITY_ENTRY_KEYS:
+            raise ValueError("probability entry fields are not the closed set")
+        name = entry.get("name")
+        if type(name) is not str:
+            raise ValueError("probability name must be a string")
+        pairs.append((name, _json_number(entry.get("probability"), "probability")))
     return tuple(pairs)
 
 
@@ -1222,14 +1229,18 @@ def _answer_document(answer: Answer) -> dict:
             "kind": "choice",
             "selected_choice": answer.selected_choice,
             "confidence": answer.confidence,
-            "probabilities": {key: value for key, value in answer.probabilities},
+            "probabilities": _probability_document(answer.probabilities),
         }
     return {
         "kind": "score",
         "expected_score": answer.expected_score,
         "confidence": answer.confidence,
-        "probabilities": {key: value for key, value in answer.probabilities},
+        "probabilities": _probability_document(answer.probabilities),
     }
+
+
+def _probability_document(pairs: tuple[tuple[str, float], ...]) -> list[dict]:
+    return [{"name": name, "probability": probability} for name, probability in pairs]
 
 
 class _ClockGuard:

@@ -380,6 +380,81 @@ def test_standalone_answer_structural_validation() -> None:
             response_to_json(raw)
 
 
+def _names(pairs) -> list[str]:
+    return [name for name, _value in pairs]
+
+
+def test_probability_order_round_trip() -> None:
+    choice_pairs = (("z", 0.2), ("a", 0.3), ("middle", 0.5))
+    choice = ChoiceAnswer("z", 0.2, choice_pairs)
+    choice_response = _success_shell(
+        _request(questions=(("label", ChoiceQuestion(("a", "middle", "z"))),)),
+        (("label", choice),),
+    )
+    restored_choice = response_from_json(response_to_json(choice_response))
+    assert restored_choice == choice_response
+    assert _names(restored_choice.answers[0][1].probabilities) == ["z", "a", "middle"]
+    score_pairs = (("z", 0.2), ("a", 0.3), ("middle", 0.5))
+    score = ScoreAnswer(0.4, 0.5, score_pairs)
+    score_response = _success_shell(
+        _request(questions=(("fit", ScoreQuestion(("a", "middle", "z"), 0.0, 1.0)),)),
+        (("fit", score),),
+    )
+    restored_score = response_from_json(response_to_json(score_response))
+    assert restored_score == score_response
+    assert _names(restored_score.answers[0][1].probabilities) == ["z", "a", "middle"]
+
+
+def test_mixed_batch_preserves_question_answer_and_probability_order() -> None:
+    questions = (
+        ("z", ScoreQuestion(("z", "a", "middle"), 0.0, 1.0)),
+        ("a", BinaryQuestion("same entity")),
+        ("m", ChoiceQuestion(("z", "a", "middle"))),
+    )
+    request = _request(questions=questions)
+    assert request_from_json(request_to_json(request)) == request
+    assert _names(request_from_json(request_to_json(request)).questions) == ["z", "a", "m"]
+    pairs = (("z", 0.2), ("a", 0.3), ("middle", 0.5))
+    answers = (
+        ("z", ScoreAnswer(0.4, 0.5, pairs)),
+        ("a", BinaryAnswer(0.25)),
+        ("m", ChoiceAnswer("z", 0.2, pairs)),
+    )
+    response = _success_shell(request, answers)
+    restored = response_from_json(response_to_json(response))
+    assert restored == response
+    assert _names(restored.answers) == ["z", "a", "m"]
+    assert _names(restored.answers[0][1].probabilities) == ["z", "a", "middle"]
+    assert _names(restored.answers[2][1].probabilities) == ["z", "a", "middle"]
+
+
+def test_invalid_probability_arrays_are_rejected() -> None:
+    request = _request(questions=(("label", ChoiceQuestion(("a", "z"))),))
+    valid = ChoiceAnswer("z", 0.2, (("z", 0.2), ("a", 0.8)))
+    response = _success_shell(request, (("label", valid),))
+    document = json.loads(response_to_json(response))
+    original = document["answers"][0]["answer"]["probabilities"]
+
+    def reject(probabilities) -> None:
+        mutated = json.loads(json.dumps(document))
+        mutated["answers"][0]["answer"]["probabilities"] = probabilities
+        with pytest.raises(ValueError):
+            response_from_json(json.dumps(mutated))
+
+    reject([{"name": "z", "probability": 0.2}, {"name": "z", "probability": 0.8}])
+    reject([{"probability": 1.0}])
+    reject([{"name": "z"}])
+    reject([{"name": "z", "probability": 1.0, "extra": 1}])
+    reject({"z": 1.0})
+    reject([("z", 1.0)])
+    reject([{"name": 1, "probability": 1.0}])
+    reject([{"name": "z", "probability": float("nan")}])
+    reject([{"name": "z", "probability": float("inf")}])
+    reject([{"name": "z", "probability": -0.1}, {"name": "a", "probability": 1.1}])
+    reject([{"name": "z", "probability": 1.1}])
+    assert original[0]["name"] == "z"
+
+
 def test_nonalphabetic_batch_json_order_round_trip() -> None:
     questions = (
         ("z", ScoreQuestion(("high", "low"), 0.0, 1.0)),
