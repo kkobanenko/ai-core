@@ -1,8 +1,19 @@
 # Feature Specification: Judgment Provider v0.1
 
-**Status**: PLAN_ONLY — documentation defines a future contract; it does not
-authorize runtime, provider admission, deployment, credentials, network calls,
-consumer migration, or automatic actions.
+**Status**: `AUTHORIZE_J1_CONTRACT_ONLY`, scope `contract_only`.
+
+Recorded authorization, not a new one:
+`kkobanenko/platform-control` Remote Truth
+`717cace0d109105c406723de30cd72e4e3ed7dd4`, evidence
+`coordination/initiatives/platform-factory-global-roadmap/evidence/operator-decision-authorize-j1-contract-only.yaml`,
+task `PC-SEMANTIC-JUDGMENT-J1-AUTH-01`.
+
+That decision authorizes the callable provider-neutral contract: interface,
+`Choice`, `Score`, `Noul`, schemas, validation, deadline, normalized errors,
+privacy/egress boundary, version pins, metadata-only telemetry, and contract
+tests. It does not authorize J2, real Jev calls, credentials, provider network
+execution, deployment, consumer migration, runtime catalog promotion,
+production, live execution, or authoritative decisions.
 
 ## Problem statement
 
@@ -16,11 +27,21 @@ existing baselines when a provider is unavailable, late, invalid, or
 low-confidence. It must also enforce privacy and egress before any transport
 attempt.
 
+
+### J1 execution scope: deterministic mock only
+
+J1 callable execution (`invoke_judgment`) executes only the repository-owned
+deterministic mock (`mock_judgment` / `DeterministicMockJudgmentProvider`).
+Arbitrary provider factories and production provider adapters (e.g. `mistral_external`)
+cannot be executed under J1 contract-only authority. Production `JUDGMENT` capability
+admission remains future work (J2+).
+
 ## Non-goals
 
-- This package does not add runtime code, a `JUDGMENT` enum value, catalog
-  entries, provider identities, aliases, SDKs, credentials, endpoints, or
-  network integration.
+- This authorization does not add a `JUDGMENT` enum value, catalog entries,
+  provider identities, aliases, SDKs, credentials, endpoints, or network
+  integration. The callable contract is authorized. Real provider execution
+  is not.
 - A `JudgmentProvider` is not a `TextProvider`, prompt-to-JSON convention, or
   a mode of structured text generation.
 - It does not admit `typesafe_jev`, `kev_local`, or `mock_judgment` as a live
@@ -193,9 +214,10 @@ runtime capability. The catalog must continue to require identity, exact model,
 capability authorization, privacy/egress eligibility, health, and governance
 admission; `JUDGMENT` alone must not make a provider eligible.
 
-The proposed implementations are `typesafe_jev`, `kev_local`, and
-`mock_judgment`. All are planned, unadmitted, and unimplemented. The mock is
-test-only and is not a production provider.
+`typesafe_jev` and `kev_local` are planned, unadmitted, and unimplemented.
+`mock_judgment` is implemented as the deterministic J1 test-only execution path.
+It is not a production provider. Real provider execution, `JUDGMENT` admission,
+J2, and deployment are not authorized.
 
 ## D7 compatibility statement
 
@@ -236,8 +258,9 @@ package.
 
 ## Acceptance boundary
 
-### J1 acceptance criteria for a separately authorized implementation PR
-(`AUTHORIZE_J1`, scope `contract_only`; current state `HOLD_J1`)
+### J1 acceptance criteria under the recorded contract-only authorization
+(`AUTHORIZE_J1_CONTRACT_ONLY`, scope `contract_only`; evidence SHA
+`717cace0d109105c406723de30cd72e4e3ed7dd4`)
 
 - A typed `JudgmentProvider`, `Choice`, `Score`, and `Noul` contract validates
   requests and responses without treating text/JSON generation as the result.

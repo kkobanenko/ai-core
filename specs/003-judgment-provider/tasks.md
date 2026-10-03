@@ -2,23 +2,26 @@
 
 **Authority**: `spec.md` and `plan.md`.
 
-**Package type**: DOCS_ONLY_DESIGN. The unchecked tasks below are a future,
-separately authorized J1 implementation checklist. They do not authorize
-runtime changes in this package.
+**Package type**: contract-only implementation under recorded
+`AUTHORIZE_J1_CONTRACT_ONLY` (scope `contract_only`). Evidence:
+`kkobanenko/platform-control` `717cace0d109105c406723de30cd72e4e3ed7dd4`
+`coordination/initiatives/platform-factory-global-roadmap/evidence/operator-decision-authorize-j1-contract-only.yaml`.
+Unchecked tasks below are not implied complete. This record does not authorize
+J2, provider network execution, or catalog admission.
 
 ## J1 prerequisites
 
-- [ ] **J001 — Confirm the bounded implementation gate**
-  - **Inputs**: `AUTHORIZE_J1` with scope `contract_only`, current state
-    `HOLD_J1`, approved D7 compatibility statement, exact v0.3.1 baseline,
-    and platform-control review requirement.
-  - **Changed surfaces**: none until the gate is confirmed.
+- [x] **J001 — Confirm the bounded implementation gate**
+  - **Inputs**: recorded `AUTHORIZE_J1_CONTRACT_ONLY`, scope `contract_only`,
+    task `PC-SEMANTIC-JUDGMENT-J1-AUTH-01`, platform-control Remote Truth
+    `717cace0d109105c406723de30cd72e4e3ed7dd4`, evidence
+    `coordination/initiatives/platform-factory-global-roadmap/evidence/operator-decision-authorize-j1-contract-only.yaml`.
+  - **Changed surfaces**: ai-core J1 docs now cite that evidence. Platform-control
+    was not modified.
   - **Deterministic acceptance**: the written authorization names J1 and the
-    `contract_only` scope; the baseline remains v0.3.1 plus pc#291 extensions
-    marked `accepted-in-canon, implementation pending`; no pending
-    architecture decision is left to the implementer.
-  - **STOP**: authorization is absent, D7 facts conflict with the baseline, or
-    a new provider/authority decision is needed.
+    `contract_only` scope. Callable contract runtime is in scope. Real provider
+    network execution is not.
+  - **STOP**: authorization evidence is absent or contradicts Remote Truth.
 
 ## J1 contract and validation
 
@@ -96,7 +99,7 @@ runtime changes in this package.
   - **STOP**: an adapter, transport, or consumer introduces a nested retry or
     separate deadline.
 
-- [ ] **J008 — Add only the deterministic test mock**
+- [x] **J008 — Add only the deterministic test mock** (completed: `src/ai_core/judgment_mock.py`, `tests/test_judgment_mock.py`)
   - **Inputs**: validated contract and the one-loop execution boundary.
   - **Changed surfaces**: future `mock_judgment` module and contract/failure
     tests.

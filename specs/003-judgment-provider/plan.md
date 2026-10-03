@@ -1,7 +1,12 @@
 # Implementation Plan: Judgment Provider v0.1
 
-**Status**: PLAN_ONLY. This plan describes a future separately authorized J1
-implementation. This documentation package creates no runtime behavior.
+**Status**: `AUTHORIZE_J1_CONTRACT_ONLY`, scope `contract_only`.
+
+The authorization already recorded at platform-control Remote Truth
+`717cace0d109105c406723de30cd72e4e3ed7dd4`
+(`coordination/initiatives/platform-factory-global-roadmap/evidence/operator-decision-authorize-j1-contract-only.yaml`)
+allows the callable provider-neutral contract. It does not allow J2, real
+provider network execution, credentials, deployment, or catalog admission.
 
 ## Goal
 
@@ -13,7 +18,7 @@ deterministic rules, human gates, and baseline behavior on failure.
 
 J1 will add a small judgment-specific contract boundary rather than reuse text
 completion or JSON-mode APIs. A validated request flows through privacy/egress
-gating, catalog eligibility for the future `JUDGMENT` capability, one
+gating, restricted deterministic mock execution (J1 mock-only execution does not use a production JUDGMENT admission; real provider execution remains blocked until future admission exists), one
 deadline-bounded execution loop, response validation, and metadata-only
 telemetry. Consumers retain decision packs, thresholds, deterministic rules,
 and durable workflow retry.
@@ -30,8 +35,7 @@ remain J2-or-later work.
   all documented as `accepted-in-canon, implementation pending`.
 - Current runtime provider identities and capabilities are not modified by this
   documentation package.
-- A future J1 implementation must add `JUDGMENT` as a distinct capability; it
-  must not make text or structured JSON authorization equivalent to judgment.
+- J1 execution is restricted to deterministic mock_judgment only; real provider execution requires future JUDGMENT admission (J2+). Text or structured JSON authorization does not grant judgment authority.
 - One total monotonic deadline includes validation, bounded retry, and any
   allowed fallback. Retry/fallback loops must have one owner.
 - Privacy/egress denial occurs before transport construction, credential lookup,
@@ -48,10 +52,14 @@ remain J2-or-later work.
 - This plan does not authorize provider admission, deployment, consumer
   migration, release, or automatic action.
 
-## Proposed module boundaries
+## Module boundaries
 
-The following boundaries are proposed for a future J1 implementation. They do
-not create files in this package.
+`src/ai_core/judgment_contracts.py` now holds the authorized callable contract:
+typed request/response, validation, normalized errors, privacy/egress check,
+one deadline, and metadata-only telemetry. Rollback of that file is a revert
+of its commit. The rows below that are not that file are still future work.
+This authorization does not create them, and it does not create provider
+network execution.
 
 | Proposed surface | Single responsibility |
 | --- | --- |
@@ -126,9 +134,9 @@ handled later as a fail-neutral protocol for consumers and is not part of J1.
 
 1. D7 canon remains recorded as v0.3.1 plus pc#291 extensions; no unresolved
    architecture decision may be inferred by the implementer.
-2. Before J1 starts, `AUTHORIZE_J1` with scope `contract_only` must be
-   explicitly recorded by the authorized operator/governance process; the
-   current state remains `HOLD_J1`.
+2. `AUTHORIZE_J1_CONTRACT_ONLY` with scope `contract_only` is already recorded
+   at platform-control `717cace0d109105c406723de30cd72e4e3ed7dd4`. Callable
+   contract runtime is authorized. Provider network execution is not.
 3. Before any catalog or runtime change, the implementation must receive
    platform-control review because it changes provider/capability contracts.
 4. Before J1 is accepted, a human reviews the exact head, contract tests,
@@ -141,7 +149,6 @@ handled later as a fail-neutral protocol for consumers and is not part of J1.
 
 ## Rollback
 
-This package is documentation only: rollback is a revert of its documentation
-commit. A future J1 implementation must make its own rollback plan before it
-changes any runtime surface. No provider, credential, deployment, or consumer
-state is introduced here.
+Rollback of the callable contract is a revert of `src/ai_core/judgment_contracts.py`
+and its tests. No provider credential, deployment, consumer state, or network
+execution is introduced. J2 and catalog admission stay unauthorized.
