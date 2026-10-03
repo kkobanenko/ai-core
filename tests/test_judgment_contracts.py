@@ -1341,3 +1341,27 @@ def test_round_6_bound_strings_in_payload() -> None:
     huge_key = "k" * 129
     req_huge_key = _request(payload={huge_key: "value"})
     assert invoke_judgment(req_huge_key, clock=_clock(1.0)).error is JudgmentErrorCategory.INVALID_REQUEST
+
+
+def test_round_7_fail_closed_on_transient_invalid_initial_clock() -> None:
+    """Prove that transient invalid initial clock read fails closed with DEADLINE_EXHAUSTED immediately."""
+    class TransientClock:
+        def __init__(self) -> None:
+            self.called = 0
+
+        def __call__(self) -> float:
+            self.called += 1
+            if self.called == 1:
+                return float("nan")
+            return 10.0
+
+    req = _request(deadline_monotonic=100.0)
+    response = invoke_judgment(
+        req,
+        decision_pack_known=lambda dp_id, dp_ver: True,
+        clock=TransientClock(),
+    )
+    assert response.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
+    assert response.choice is None
+    assert response.telemetry.latency_ms == 0
+    assert response.provider == req.provider

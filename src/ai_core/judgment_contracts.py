@@ -239,6 +239,8 @@ def invoke_judgment(
     # Привратник приватности проверяется ДО обращения к резолверу decision-pack
     if not _privacy_allows(request):
         return _error_response(request, JudgmentErrorCategory.PRIVACY_EGRESS_DENIED, _safe_latency(started, clock))
+    if started is None:
+        return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, 0)
     dp_now = _safe_now(clock)
     if not _open_at(request, dp_now):
         return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency_from(started, dp_now))
