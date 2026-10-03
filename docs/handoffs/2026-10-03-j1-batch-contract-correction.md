@@ -8,7 +8,7 @@ Branch: fix/j1-canonical-batch-contract
 
 Base SHA: 10075dc61c4a8cbe7874fd3047eeec868946518f
 
-Implementation HEAD: 18276c4a71edc61e9df68e59b06d65bef028896e
+Implementation HEAD: 18a59b614555a95e9f2847896a695c28ef3cdb45
 
 Scope: correct merged J1 to the batch-first contract
 
@@ -29,7 +29,8 @@ The PR exact reviewed head is recorded by GitHub PR #35 review/merge evidence.
 
 - 207f456f07bf37ede6cf509e50b0803ed2ec3669 — initial canonical batch correction
 - 684684ab58b7c51bb90651788065522bea57ccff — answer structural validation and ordered question/answer serialization
-- 18276c4a71edc61e9df68e59b06d65bef028896e — ordered probability serialization and final runtime/test correction
+- 18276c4a71edc61e9df68e59b06d65bef028896e — ordered probability serialization
+- 18a59b614555a95e9f2847896a695c28ef3cdb45 — request-first validation, valid normalized errors, telemetry identity consistency
 
 ## What changed
 
@@ -37,10 +38,10 @@ The incorrect provider-neutral Noul draft is removed. A request holds named Bina
 
 ## Tests
 
-- targeted J1 tests: 23 passed
-- python3.10 -m pytest -q: 405 passed
+- targeted J1 tests: 26 passed
+- python3.10 -m pytest -q: 408 passed
 - git diff --check: pass
-- CI: SUCCESS on 18276c4a71edc61e9df68e59b06d65bef028896e
+- CI: SUCCESS on 18a59b614555a95e9f2847896a695c28ef3cdb45
 
 ## Risks
 
@@ -50,7 +51,7 @@ J1 remains mock-only. Real providers stay blocked. JUDGMENT admission is not imp
 
 Primary rollback: revert the eventual PR #35 merge.
 
-Implementation snapshot: 18276c4a71edc61e9df68e59b06d65bef028896e
+Implementation snapshot: 18a59b614555a95e9f2847896a695c28ef3cdb45
 
 Reverting only an earlier intermediate commit does not remove the whole correction. Provider catalog behavior is unchanged. There is no deployment to roll back.
 
