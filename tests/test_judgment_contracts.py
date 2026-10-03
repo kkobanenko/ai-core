@@ -10,6 +10,7 @@ import pytest
 from ai_core.judgment_contracts import (
     Choice,
     JudgmentErrorCategory,
+    JudgmentOutcome,
     JudgmentRequest,
     JudgmentResponse,
     JudgmentTelemetry,
@@ -80,7 +81,17 @@ def _request(**overrides: object) -> JudgmentRequest:
 
 
 def _telemetry() -> JudgmentTelemetry:
-    return JudgmentTelemetry("choice", "", 0, 0, "fixture-provider", "fixture-model", "1.0.0", "pack-1", "1")
+    return JudgmentTelemetry(
+        JudgmentOutcome.CHOICE,
+        None,
+        0,
+        0,
+        "fixture-provider",
+        "fixture-model",
+        "1.0.0",
+        "pack-1",
+        "1",
+    )
 
 
 def _choice(value: str = "yes", **identity: str) -> JudgmentResponse:
@@ -576,3 +587,124 @@ def test_b4_positive_pin_grammar() -> None:
         response, spy = _invoke(_request(model_version=pin), _choice())
         assert response.error is JudgmentErrorCategory.INVALID_REQUEST, pin
         assert spy.built == 0
+
+
+def test_c1_external_boundary_does_not_trust_hosted_flag() -> None:
+    def run(data_class: DataClass, boundary: NetworkBoundary, egress: bool, hosted: bool):
+        fixture = SpyProvider(_choice())
+        response = invoke_judgment(
+            _request(
+                data_class=data_class,
+                network_boundary=boundary,
+                request_egress_authorized=egress,
+                hosted_boundary=hosted,
+                outbound_form=OutboundForm.RAW,
+            ),
+            provider_factory=fixture.factory,
+            clock=_clock(10.0),
+        )
+        return response, fixture
+
+    allowed, called = run(DataClass.SYNTHETIC, NetworkBoundary.EXTERNAL, True, True)
+    assert allowed.choice == Choice("yes")
+    assert called.calls == 1
+    public, public_calls = run(DataClass.PUBLIC_NO_PII, NetworkBoundary.EXTERNAL, True, True)
+    assert public.choice == Choice("yes")
+    assert public_calls.calls == 1
+    for data_class in (DataClass.PUBLIC_POSSIBLE_PII, DataClass.PRIVATE_CLIENT_DATA, DataClass.SECRET):
+        denied, fixture = run(data_class, NetworkBoundary.EXTERNAL, True, True)
+        assert denied.error is JudgmentErrorCategory.PRIVACY_EGRESS_DENIED
+        assert fixture.calls == 0
+    disguised, fixture = run(DataClass.PRIVATE_CLIENT_DATA, NetworkBoundary.EXTERNAL, True, False)
+    assert disguised.error is JudgmentErrorCategory.PRIVACY_EGRESS_DENIED
+    assert fixture.calls == 0
+    no_egress, fixture = run(DataClass.SYNTHETIC, NetworkBoundary.EXTERNAL, False, True)
+    assert no_egress.error is JudgmentErrorCategory.PRIVACY_EGRESS_DENIED
+    assert fixture.calls == 0
+    contradiction, fixture = run(DataClass.SYNTHETIC, NetworkBoundary.LOCAL_SAME_HOST, False, True)
+    assert contradiction.error is JudgmentErrorCategory.INVALID_REQUEST
+    assert fixture.calls == 0
+
+
+def test_c2_deadline_covers_validation() -> None:
+    class SequenceClock:
+        def __init__(self, values: list[float]) -> None:
+            self.values = list(values)
+
+        def __call__(self) -> float:
+            return self.values.pop(0)
+
+    late_validation = invoke_judgment(
+        _request(deadline_monotonic=1.0),
+        SpyProvider(_choice()),
+        clock=SequenceClock([0.0, 0.0, 0.9, 1.1]),
+    )
+    assert late_validation.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
+    assert late_validation.choice is None
+    late_provider = invoke_judgment(
+        _request(deadline_monotonic=1.0),
+        SpyProvider(_choice()),
+        clock=SequenceClock([0.0, 0.0, 1.2, 1.3]),
+    )
+    assert late_provider.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
+    assert "yes" not in response_to_json(late_provider)
+    on_time = invoke_judgment(
+        _request(deadline_monotonic=5.0),
+        SpyProvider(_choice()),
+        clock=SequenceClock([0.0, 0.0, 0.2, 0.4]),
+    )
+    assert on_time.choice == Choice("yes")
+
+
+def test_c3_invalid_request_does_not_echo_input() -> None:
+    for bad in (None, "text", {}, object()):
+        response = invoke_judgment(bad)  # type: ignore[arg-type]
+        assert response.error is JudgmentErrorCategory.INVALID_REQUEST
+        assert response.provider == "unvalidated"
+    for overrides in (
+        {"provider": None},
+        {"model": {}},
+        {"model_version": 12},
+        {"decision_pack_id": None},
+        {"allowed_choices": None},
+    ):
+        fixture = SpyProvider(_choice())
+        response = invoke_judgment(_request(**overrides), provider_factory=fixture.factory, clock=_clock(1.0))  # type: ignore[arg-type]
+        assert response.error is JudgmentErrorCategory.INVALID_REQUEST
+        assert fixture.calls == 0
+        assert response.provider == "unvalidated"
+        rendered = response_to_json(response)
+        assert "None" not in rendered
+        assert "{}" not in rendered
+
+
+def test_c4_telemetry_outcome_is_closed() -> None:
+    choice, _spy = _invoke(_request(), _choice())
+    noul, _other = _invoke(_request(), _bare(noul=Noul(NoulReason.NO_RELIABLE_JUDGMENT)))
+    failure, _third = _invoke(_request(), _bare(error=JudgmentErrorCategory.PROVIDER_UNAVAILABLE))
+    assert choice.telemetry.outcome is JudgmentOutcome.CHOICE
+    assert choice.telemetry.error_category is None
+    assert noul.telemetry.outcome is JudgmentOutcome.NOUL
+    assert failure.telemetry.outcome is JudgmentOutcome.ERROR
+    assert failure.telemetry.error_category is JudgmentErrorCategory.PROVIDER_UNAVAILABLE
+    document = json.loads(response_to_json(choice))
+    document["telemetry"]["outcome"] = "payload-fragment"
+    with pytest.raises(ValueError):
+        response_from_json(json.dumps(document))
+    document = json.loads(response_to_json(choice))
+    document["telemetry"]["error_category"] = "arbitrary provider text"
+    with pytest.raises(ValueError):
+        response_from_json(json.dumps(document))
+    document = json.loads(response_to_json(noul))
+    document["telemetry"]["error_category"] = "privacy_egress_denied"
+    with pytest.raises(ValueError):
+        response_from_json(json.dumps(document))
+    document = json.loads(response_to_json(failure))
+    document["telemetry"]["error_category"] = "deadline_exhausted"
+    with pytest.raises(ValueError):
+        response_from_json(json.dumps(document))
+    document = json.loads(response_to_json(failure))
+    document["telemetry"]["error_category"] = None
+    with pytest.raises(ValueError):
+        response_from_json(json.dumps(document))
+    assert response_from_json(response_to_json(choice)).telemetry.outcome is JudgmentOutcome.CHOICE

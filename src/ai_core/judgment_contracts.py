@@ -56,6 +56,65 @@ class NoulReason(str, Enum):
     NO_RELIABLE_JUDGMENT = "no_reliable_judgment"
 
 
+class JudgmentOutcome(str, Enum):
+    """Закрытый исход телеметрии. Свободный текст сюда не входит."""
+
+    CHOICE = "choice"
+    NOUL = "noul"
+    ERROR = "error"
+
+
+_UNVALIDATED = "unvalidated"
+_REQUEST_JSON_KEYS = frozenset(
+    {
+        "allowed_choices",
+        "criterion_id",
+        "data_class",
+        "deadline_monotonic",
+        "decision_pack_id",
+        "decision_pack_version",
+        "hosted_boundary",
+        "model",
+        "model_version",
+        "network_boundary",
+        "noul_allowed",
+        "outbound_form",
+        "payload",
+        "provider",
+        "request_egress_authorized",
+        "request_id",
+        "score_scale",
+    }
+)
+_RESPONSE_JSON_KEYS = frozenset(
+    {
+        "choice",
+        "decision_pack_id",
+        "decision_pack_version",
+        "error",
+        "model",
+        "model_version",
+        "noul",
+        "provider",
+        "score",
+        "telemetry",
+    }
+)
+_TELEMETRY_JSON_KEYS = frozenset(
+    {
+        "decision_pack_id",
+        "decision_pack_version",
+        "error_category",
+        "latency_ms",
+        "model",
+        "model_version",
+        "outcome",
+        "provider",
+        "retry_count",
+    }
+)
+
+
 @dataclass(frozen=True)
 class Choice:
     """Один символический исход. Смысл задаёт потребитель, не ai-core."""
@@ -91,8 +150,8 @@ class Noul:
 class JudgmentTelemetry:
     """Только метаданные. Полезная нагрузка и секреты сюда не входят."""
 
-    outcome: str
-    error_category: str
+    outcome: JudgmentOutcome
+    error_category: JudgmentErrorCategory | None
     latency_ms: int
     retry_count: int
     provider: str
@@ -160,38 +219,44 @@ def invoke_judgment(
     Повтор и запасной провайдер в J1 не выполняются.
     Общий монотонный срок остаётся одним на будущий повтор.
     """
-    started = _now(clock)
+    started = _safe_now(clock)
+    if not isinstance(request, JudgmentRequest):
+        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
     try:
         invalid = _request_error(request)
     except (AttributeError, TypeError):
-        return _error_response(request, JudgmentErrorCategory.INVALID_REQUEST, _latency(started, clock))
+        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
     if invalid is not None:
-        return _error_response(request, invalid, _latency(started, clock))
+        return _unvalidated_error(invalid, _safe_latency(started, clock))
     if not _privacy_allows(request):
-        return _error_response(request, JudgmentErrorCategory.PRIVACY_EGRESS_DENIED, _latency(started, clock))
+        return _error_response(request, JudgmentErrorCategory.PRIVACY_EGRESS_DENIED, _safe_latency(started, clock))
     if not _deadline_open(request, clock):
-        return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency(started, clock))
+        return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _safe_latency(started, clock))
     try:
         active = provider if provider is not None else None
         if active is None:
             if provider_factory is None:
-                return _error_response(request, JudgmentErrorCategory.INTERNAL_ERROR, _latency(started, clock))
+                return _error_response(request, JudgmentErrorCategory.INTERNAL_ERROR, _safe_latency(started, clock))
             active = provider_factory()
         raw = active.judge(request)
     except Exception:
         # Текст исключения наружу не отдаём: в нём может быть нагрузка.
-        return _error_response(request, JudgmentErrorCategory.INTERNAL_ERROR, _latency(started, clock))
-    # Тот же монотонный срок. Поздний ответ провайдера не становится успехом.
-    if not _deadline_open(request, clock):
-        return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency(started, clock))
+        return _error_response(request, JudgmentErrorCategory.INTERNAL_ERROR, _safe_latency(started, clock))
+    latency = _safe_latency(started, clock)
     try:
-        return _checked_provider_result(request, raw, _latency(started, clock))
+        checked = _checked_provider_result(request, raw, latency)
     except (AttributeError, TypeError):
-        return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, _latency(started, clock))
+        checked = _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency)
+    # Последняя проверка срока. После неё результат только отдаётся.
+    if not _deadline_open(request, clock):
+        return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, latency)
+    return checked
 
 
 def request_to_json(request: JudgmentRequest) -> str:
-    """Стабильный JSON запроса. Провайдер и часы не сериализуются."""
+    """Стабильный JSON запроса. Невалидный запрос не сериализуется."""
+    if not isinstance(request, JudgmentRequest) or _request_error(request) is not None:
+        raise ValueError("request is not a valid J1 contract")
     return json.dumps(_request_document(request), ensure_ascii=True, separators=(",", ":"), sort_keys=True)
 
 
@@ -200,6 +265,8 @@ def request_from_json(text: str) -> JudgmentRequest:
     loaded = json.loads(text)
     if not isinstance(loaded, dict):
         raise ValueError("request JSON must be an object")
+    if set(loaded) != _REQUEST_JSON_KEYS:
+        raise ValueError("request JSON fields are not the closed set")
     choices = loaded.get("allowed_choices")
     if not isinstance(choices, list) or any(not isinstance(item, str) for item in choices):
         raise ValueError("allowed_choices must be a list of strings")
@@ -225,7 +292,9 @@ def request_from_json(text: str) -> JudgmentRequest:
 
 
 def response_to_json(response: JudgmentResponse) -> str:
-    """Стабильный JSON ответа. Сырой текст провайдера сюда не входит."""
+    """Стабильный JSON ответа. Невалидная структура не сериализуется."""
+    if _structural_problem(response) is not None:
+        raise ValueError("response is not a valid J1 contract")
     return json.dumps(_response_document(response), ensure_ascii=True, separators=(",", ":"), sort_keys=True)
 
 
@@ -234,12 +303,14 @@ def response_from_json(text: str) -> JudgmentResponse:
     loaded = json.loads(text)
     if not isinstance(loaded, dict):
         raise ValueError("response JSON must be an object")
+    if set(loaded) != _RESPONSE_JSON_KEYS:
+        raise ValueError("response JSON fields are not the closed set")
     telemetry_raw = loaded.get("telemetry")
-    if not isinstance(telemetry_raw, dict):
+    if not isinstance(telemetry_raw, dict) or set(telemetry_raw) != _TELEMETRY_JSON_KEYS:
         raise ValueError("telemetry must be an object")
     telemetry = JudgmentTelemetry(
-        outcome=_json_str(telemetry_raw.get("outcome"), "outcome"),
-        error_category=_json_text(telemetry_raw.get("error_category"), "error_category"),
+        outcome=_json_outcome(telemetry_raw.get("outcome")),
+        error_category=_json_error_category(telemetry_raw.get("error_category")),
         latency_ms=_json_int(telemetry_raw.get("latency_ms"), "latency_ms"),
         retry_count=_json_int(telemetry_raw.get("retry_count"), "retry_count"),
         provider=_json_str(telemetry_raw.get("provider"), "provider"),
@@ -267,8 +338,14 @@ def response_from_json(text: str) -> JudgmentResponse:
 
 def validate_response_for_request(response: JudgmentResponse, request: JudgmentRequest) -> JudgmentErrorCategory | None:
     """Сначала структура ответа. Потом сверка с запросом."""
-    if _structural_problem(response) is not None:
+    if not isinstance(response, JudgmentResponse) or _structural_problem(response) is not None:
         return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+    try:
+        request_problem = _request_error(request)
+    except (AttributeError, TypeError):
+        return JudgmentErrorCategory.INVALID_REQUEST
+    if request_problem is not None:
+        return JudgmentErrorCategory.INVALID_REQUEST
     if not _identity_matches(request, response):
         return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
     if response.error is not None:
@@ -335,6 +412,14 @@ def _structural_problem(response: JudgmentResponse) -> str | None:
         or telemetry.decision_pack_version != response.decision_pack_version
     ):
         return "telemetry identity"
+    if response.choice is not None:
+        if telemetry.outcome is not JudgmentOutcome.CHOICE or telemetry.error_category is not None:
+            return "telemetry outcome"
+    elif response.noul is not None:
+        if telemetry.outcome is not JudgmentOutcome.NOUL or telemetry.error_category is not None:
+            return "telemetry outcome"
+    elif telemetry.outcome is not JudgmentOutcome.ERROR or telemetry.error_category is not response.error:
+        return "telemetry outcome"
     return None
 
 
@@ -346,8 +431,30 @@ def _score_shape_ok(score: Score) -> bool:
 
 def grants_authority(response: JudgmentResponse) -> bool:
     """Контракт не выдаёт права. Истина здесь означает нарушение инварианта."""
+    if not isinstance(response, JudgmentResponse) or _structural_problem(response) is not None:
+        return False
     document = _response_document(response)
     return any(name in document for name in FORBIDDEN_AUTHORITY)
+
+
+def _json_outcome(value: object) -> JudgmentOutcome:
+    if not isinstance(value, str):
+        raise ValueError("outcome must be a string")
+    try:
+        return JudgmentOutcome(value)
+    except ValueError as exc:
+        raise ValueError("outcome is outside the closed set") from exc
+
+
+def _json_error_category(value: object) -> JudgmentErrorCategory | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("error_category must be a string")
+    try:
+        return JudgmentErrorCategory(value)
+    except ValueError as exc:
+        raise ValueError("error_category is outside the closed set") from exc
 
 
 def _json_str(value: object, name: str) -> str:
@@ -463,6 +570,9 @@ def _request_error(request: JudgmentRequest) -> JudgmentErrorCategory | None:
         return JudgmentErrorCategory.INVALID_REQUEST
     if request.score_scale is not None and not _scale_ok(request.score_scale):
         return JudgmentErrorCategory.INVALID_REQUEST
+    # Флаг hosted не может объявить внешнюю границу локальной.
+    if request.hosted_boundary is True and request.network_boundary is not NetworkBoundary.EXTERNAL:
+        return JudgmentErrorCategory.INVALID_REQUEST
     return None
 
 
@@ -493,7 +603,7 @@ def _exact_pin(value: object) -> bool:
 
 
 def _privacy_allows(request: JudgmentRequest) -> bool:
-    """Сначала общий egress, затем более узкое правило внешней границы."""
+    """Внешняя граница всегда строже. Флаг hosted_boundary права не расширяет."""
     eligible = is_egress_eligible(
         data_class=request.data_class,
         outbound_form=request.outbound_form,
@@ -502,17 +612,15 @@ def _privacy_allows(request: JudgmentRequest) -> bool:
     )
     if eligible is not True:
         return False
-    if request.hosted_boundary is not True:
-        return True
-    if request.network_boundary is not NetworkBoundary.EXTERNAL:
-        return False
-    if request.request_egress_authorized is not True:
-        return False
-    return request.data_class in HOSTED_DATA_CLASSES
+    if request.network_boundary is NetworkBoundary.EXTERNAL:
+        if request.request_egress_authorized is not True:
+            return False
+        return request.data_class in HOSTED_DATA_CLASSES
+    return True
 
 
 def _deadline_open(request: JudgmentRequest, clock: Callable[[], float]) -> bool:
-    return _now(clock) < float(request.deadline_monotonic)
+    return _safe_now(clock) < float(request.deadline_monotonic)
 
 
 def _checked_provider_result(request: JudgmentRequest, raw: object, latency_ms: int) -> JudgmentResponse:
@@ -586,8 +694,8 @@ def _success_response(
     noul: Noul | None,
     latency_ms: int,
 ) -> JudgmentResponse:
-    outcome = "noul" if noul is not None else "choice"
-    telemetry = _telemetry(request, outcome, "", latency_ms)
+    outcome = JudgmentOutcome.NOUL if noul is not None else JudgmentOutcome.CHOICE
+    telemetry = _telemetry(request, outcome, None, latency_ms)
     return JudgmentResponse(
         provider=request.provider,
         model=request.model,
@@ -603,7 +711,7 @@ def _success_response(
 
 
 def _error_response(request: JudgmentRequest, category: JudgmentErrorCategory, latency_ms: int) -> JudgmentResponse:
-    telemetry = _telemetry(request, "error", category.value, latency_ms)
+    telemetry = _telemetry(request, JudgmentOutcome.ERROR, category, latency_ms)
     return JudgmentResponse(
         provider=request.provider,
         model=request.model,
@@ -618,7 +726,36 @@ def _error_response(request: JudgmentRequest, category: JudgmentErrorCategory, l
     )
 
 
-def _telemetry(request: JudgmentRequest, outcome: str, error_category: str, latency_ms: int) -> JudgmentTelemetry:
+def _unvalidated_error(category: JudgmentErrorCategory, latency_ms: int) -> JudgmentResponse:
+    """Ответ на непроверенный ввод. Поля вызывающего сюда не копируются."""
+    telemetry = JudgmentTelemetry(
+        outcome=JudgmentOutcome.ERROR,
+        error_category=category,
+        latency_ms=latency_ms,
+        retry_count=0,
+        provider=_UNVALIDATED,
+        model=_UNVALIDATED,
+        model_version=_UNVALIDATED,
+        decision_pack_id=_UNVALIDATED,
+        decision_pack_version=_UNVALIDATED,
+    )
+    return JudgmentResponse(
+        provider=_UNVALIDATED,
+        model=_UNVALIDATED,
+        model_version=_UNVALIDATED,
+        decision_pack_id=_UNVALIDATED,
+        decision_pack_version=_UNVALIDATED,
+        telemetry=telemetry,
+        error=category,
+    )
+
+
+def _telemetry(
+    request: JudgmentRequest,
+    outcome: JudgmentOutcome,
+    error_category: JudgmentErrorCategory | None,
+    latency_ms: int,
+) -> JudgmentTelemetry:
     # retry_count остаётся 0: J1 не делает повтор. Будущий повтор ест тот же срок.
     return JudgmentTelemetry(
         outcome=outcome,
@@ -679,29 +816,30 @@ def _response_document(response: JudgmentResponse) -> dict:
         "telemetry": {
             "decision_pack_id": response.telemetry.decision_pack_id,
             "decision_pack_version": response.telemetry.decision_pack_version,
-            "error_category": response.telemetry.error_category,
+            "error_category": None if response.telemetry.error_category is None else response.telemetry.error_category.value,
             "latency_ms": response.telemetry.latency_ms,
             "model": response.telemetry.model,
             "model_version": response.telemetry.model_version,
-            "outcome": response.telemetry.outcome,
+            "outcome": response.telemetry.outcome.value,
+            "error_category": None if response.telemetry.error_category is None else response.telemetry.error_category.value,
             "provider": response.telemetry.provider,
             "retry_count": response.telemetry.retry_count,
         },
     }
 
 
-def _now(clock: Callable[[], float]) -> float:
-    value = float(clock())
+def _safe_now(clock: Callable[[], float]) -> float:
+    try:
+        value = float(clock())
+    except (TypeError, ValueError):
+        return 0.0
     if not math.isfinite(value):
-        raise ValueError("clock is not finite")
+        return 0.0
     return value
 
 
-def _latency(started: float, clock: Callable[[], float]) -> int:
-    try:
-        elapsed = _now(clock) - started
-    except ValueError:
-        return 0
+def _safe_latency(started: float, clock: Callable[[], float]) -> int:
+    elapsed = _safe_now(clock) - started
     if elapsed < 0:
         return 0
     return int(elapsed * 1000)
