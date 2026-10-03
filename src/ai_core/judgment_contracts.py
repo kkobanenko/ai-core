@@ -265,7 +265,7 @@ def invoke_judgment(
         return _error_response(request, JudgmentErrorCategory.INTERNAL_ERROR, _safe_latency(started, clock))
     try:
         checked = _checked_provider_result(request, raw, 0)
-    except (AttributeError, TypeError):
+    except (AttributeError, TypeError, ValueError, RuntimeError):
         checked = _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, 0)
     finished = _safe_now(clock)
     latency = _latency_from(started, finished)
@@ -281,19 +281,23 @@ def request_to_json(request: JudgmentRequest) -> str:
     return json.dumps(_request_document(request), ensure_ascii=True, separators=(",", ":"), sort_keys=True, allow_nan=False)
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite constant {value} is not permitted in J1 JSON")
+
+
 def request_from_json(text: str) -> JudgmentRequest:
     """Собрать локально валидный запрос из JSON.
 
     Членство decision-pack в доверенных метаданных потребителя здесь не доказывается.
     Его проверяет invoke_judgment через decision_pack_known.
     """
-    loaded = json.loads(text)
+    loaded = json.loads(text, parse_constant=_reject_json_constant)
     if not isinstance(loaded, dict):
         raise ValueError("request JSON must be an object")
     if set(loaded) != _REQUEST_JSON_KEYS:
         raise ValueError("request JSON fields are not the closed set")
     choices = loaded.get("allowed_choices")
-    if not isinstance(choices, list) or any(not isinstance(item, str) for item in choices):
+    if not isinstance(choices, list) or any(type(item) is not str for item in choices):
         raise ValueError("allowed_choices must be a list of strings")
     parsed = JudgmentRequest(
         request_id=_json_str(loaded.get("request_id"), "request_id"),
@@ -332,7 +336,7 @@ def response_to_json(response: JudgmentResponse) -> str:
 
 def response_from_json(text: str) -> JudgmentResponse:
     """Собрать ответ из JSON. Неверный тип поля не приводится к строке."""
-    loaded = json.loads(text)
+    loaded = json.loads(text, parse_constant=_reject_json_constant)
     if not isinstance(loaded, dict):
         raise ValueError("response JSON must be an object")
     if set(loaded) != _RESPONSE_JSON_KEYS:
@@ -386,7 +390,7 @@ def validate_response_for_request(response: JudgmentResponse, request: JudgmentR
         if request.noul_allowed is not True:
             return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
         return None
-    if response.choice is None or response.choice.value not in request.allowed_choices:
+    if response.choice is None or type(response.choice.value) is not str or not _exact_pin(response.choice.value) or response.choice.value not in request.allowed_choices:
         return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
     return _score_error(request, response.score)
 
@@ -418,7 +422,7 @@ def _structural_problem(response: JudgmentResponse) -> str | None:
     )
     if sum(1 for item in present if item) != 1:
         return "variant count"
-    if response.choice is not None and not _exact_pin(response.choice.value):
+    if response.choice is not None and (type(response.choice.value) is not str or not _exact_pin(response.choice.value)):
         return "choice value"
     if response.noul is not None and not isinstance(response.noul.reason_code, NoulReason):
         return "noul reason"
@@ -498,13 +502,13 @@ def _json_error_category(value: object) -> JudgmentErrorCategory | None:
 
 
 def _json_str(value: object, name: str) -> str:
-    if not isinstance(value, str) or value.strip() == "":
+    if type(value) is not str or value.strip() == "":
         raise ValueError(f"{name} must be a non-empty string")
     return value
 
 
 def _json_text(value: object, name: str) -> str:
-    if not isinstance(value, str):
+    if type(value) is not str:
         raise ValueError(f"{name} must be a string")
     return value
 
@@ -535,6 +539,8 @@ def _json_scale(value: object) -> ScoreScale | None:
         return None
     if not isinstance(value, dict):
         raise ValueError("score_scale must be an object")
+    if set(value.keys()) != {"score_id", "minimum", "maximum"}:
+        raise ValueError("score_scale must only contain score_id, minimum, and maximum")
     return ScoreScale(
         score_id=_json_str(value.get("score_id"), "score_id"),
         minimum=_json_number(value.get("minimum"), "minimum"),
@@ -553,6 +559,8 @@ def _json_score(value: object) -> Score | None:
         return None
     if not isinstance(value, dict):
         raise ValueError("score must be an object")
+    if set(value.keys()) != {"score_id", "value"}:
+        raise ValueError("score must only contain score_id and value")
     return Score(score_id=_json_str(value.get("score_id"), "score_id"), value=_json_number(value.get("value"), "value"))
 
 
@@ -613,16 +621,33 @@ def _request_error(request: JudgmentRequest) -> JudgmentErrorCategory | None:
         return JudgmentErrorCategory.INVALID_REQUEST
     if request.score_scale is not None and not _scale_ok(request.score_scale):
         return JudgmentErrorCategory.INVALID_REQUEST
+    if request.payload is not None and not _payload_finite(request.payload):
+        return JudgmentErrorCategory.INVALID_REQUEST
     # Флаг hosted не может объявить внешнюю границу локальной.
     if request.hosted_boundary is True and request.network_boundary is not NetworkBoundary.EXTERNAL:
         return JudgmentErrorCategory.INVALID_REQUEST
     return None
 
 
+def _payload_finite(value: object) -> bool:
+    """Проверка отсутствия NaN/Infinity/переполняющих int в структуре payload."""
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, int):
+        return value.bit_length() <= 1023
+    if isinstance(value, dict):
+        return all(type(k) is str and _payload_finite(v) for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return all(_payload_finite(v) for v in value)
+    return True
+
+
 def _scale_ok(scale: object) -> bool:
     if not isinstance(scale, ScoreScale):
         return False
-    if not isinstance(scale.score_id, str) or not _exact_pin(scale.score_id):
+    if type(scale.score_id) is not str or not _exact_pin(scale.score_id):
         return False
     if not _finite_number(scale.minimum) or not _finite_number(scale.maximum):
         return False
@@ -851,7 +876,7 @@ def _checked_provider_result(request: JudgmentRequest, raw: object, latency_ms: 
             return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
         return _success_response(request, None, None, raw.noul, latency_ms)
     choice = raw.choice
-    if choice is None or not isinstance(choice.value, str) or choice.value not in request.allowed_choices:
+    if choice is None or type(choice.value) is not str or not _exact_pin(choice.value) or choice.value not in request.allowed_choices:
         return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
     score_error = _score_error(request, raw.score)
     if score_error is not None:
@@ -864,7 +889,7 @@ def _score_error(request: JudgmentRequest, score: Score | None) -> JudgmentError
         if score is not None:
             return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
         return None
-    if score is None or not isinstance(score, Score) or not isinstance(score.score_id, str):
+    if score is None or not isinstance(score, Score) or type(score.score_id) is not str or not _exact_pin(score.score_id):
         return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
     if score.score_id != request.score_scale.score_id:
         return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE

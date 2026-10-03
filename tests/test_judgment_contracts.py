@@ -1103,3 +1103,83 @@ def test_round_2_reject_hostile_str_subclass_in_response() -> None:
     assert validate_response_for_request(hostile_tel_response, _request()) is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
     with pytest.raises(ValueError):
         response_to_json(hostile_tel_response)
+
+
+def test_round_3_reject_non_finite_constants_in_json_parsing() -> None:
+    """Prove that NaN/Infinity constants in request and response JSON are rejected during parsing."""
+    valid_req_json = request_to_json(_request(payload={"note": "synthetic"}))
+    # Test request_from_json with NaN in payload
+    nan_req_json = valid_req_json.replace('"payload":{"note":"synthetic"}', '"payload":{"val":NaN}')
+    with pytest.raises(ValueError, match="non-finite constant|NaN"):
+        request_from_json(nan_req_json)
+
+    inf_req_json = valid_req_json.replace('"payload":{"note":"synthetic"}', '"payload":{"val":Infinity}')
+    with pytest.raises(ValueError, match="non-finite constant|Infinity"):
+        request_from_json(inf_req_json)
+
+    # Test that Python request with NaN payload fails _request_error / invoke_judgment
+    req_nan = _request(payload={"bad": float("nan")})
+    res = invoke_judgment(req_nan, clock=_clock(1.0))
+    assert res.error is JudgmentErrorCategory.INVALID_REQUEST
+
+    # Test response_from_json with NaN
+    valid_res_json = response_to_json(_choice())
+    nan_res_json = valid_res_json.replace('"latency_ms":0', '"latency_ms":NaN')
+    with pytest.raises(ValueError, match="non-finite constant|NaN"):
+        response_from_json(nan_res_json)
+
+
+def test_round_3_reject_hostile_str_subclass_in_response_choice() -> None:
+    """Prove that str subclasses in Choice.value are rejected without leaking hostile eq/ne exceptions."""
+    class HostileChoiceStr(str):
+        def __eq__(self, other: object) -> bool:
+            raise RuntimeError("hostile choice eq invoked")
+
+        def __ne__(self, other: object) -> bool:
+            raise RuntimeError("hostile choice ne invoked")
+
+    req = _request(allowed_choices=("good-choice",))
+    res = JudgmentResponse(
+        provider=req.provider,
+        model=req.model,
+        model_version=req.model_version,
+        decision_pack_id=req.decision_pack_id,
+        decision_pack_version=req.decision_pack_version,
+        telemetry=JudgmentTelemetry(
+            outcome=JudgmentOutcome.CHOICE,
+            error_category=None,
+            latency_ms=0,
+            retry_count=0,
+            provider=req.provider,
+            model=req.model,
+            model_version=req.model_version,
+            decision_pack_id=req.decision_pack_id,
+            decision_pack_version=req.decision_pack_version,
+        ),
+        choice=Choice(HostileChoiceStr("good-choice")),
+    )
+    assert validate_response_for_request(res, req) is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+
+    # Test mock behavior with hostile choice string
+    mock_res = invoke_judgment(
+        req,
+        mock_behavior=MockBehavior(choice_value=HostileChoiceStr("good-choice")),
+        clock=_clock(1.0),
+    )
+    assert mock_res.error is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+
+
+def test_round_3_reject_unknown_fields_in_nested_score_and_scale() -> None:
+    """Prove that extra unknown fields in score and score_scale objects raise ValueError."""
+    # Extra field in response score
+    res = _choice()
+    res_doc = json.loads(response_to_json(res))
+    res_doc["score"] = {"score_id": "fit", "value": 0.5, "provider_extra": "unexpected"}
+    with pytest.raises(ValueError, match="score must only contain score_id and value"):
+        response_from_json(json.dumps(res_doc))
+
+    # Extra field in request score_scale
+    req_doc = json.loads(request_to_json(_request()))
+    req_doc["score_scale"] = {"score_id": "fit", "minimum": 0.0, "maximum": 1.0, "extra": 123}
+    with pytest.raises(ValueError, match="score_scale must only contain score_id, minimum, and maximum"):
+        request_from_json(json.dumps(req_doc))
