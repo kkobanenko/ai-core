@@ -10,7 +10,7 @@ Branch: feat/judgment-provider-j1-contract
 
 Base SHA: a9548797c420b2a9d8b158b97a4cd48306c544db
 
-Implementation HEAD: IMPLEMENTATION_SHA_PENDING
+Implementation HEAD: 876c239c23e07ca56d897fd919a5fce8596dcf5e
 
 Scope: J1 contract_only
 
