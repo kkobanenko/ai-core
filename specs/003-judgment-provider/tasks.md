@@ -99,7 +99,7 @@ J2, provider network execution, or catalog admission.
   - **STOP**: an adapter, transport, or consumer introduces a nested retry or
     separate deadline.
 
-- [ ] **J008 — Add only the deterministic test mock**
+- [x] **J008 — Add only the deterministic test mock** (completed: `src/ai_core/judgment_mock.py`, `tests/test_judgment_mock.py`)
   - **Inputs**: validated contract and the one-loop execution boundary.
   - **Changed surfaces**: future `mock_judgment` module and contract/failure
     tests.

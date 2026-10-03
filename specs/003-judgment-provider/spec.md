@@ -27,6 +27,15 @@ existing baselines when a provider is unavailable, late, invalid, or
 low-confidence. It must also enforce privacy and egress before any transport
 attempt.
 
+
+### J1 execution scope: deterministic mock only
+
+J1 callable execution (`invoke_judgment`) executes only the repository-owned
+deterministic mock (`mock_judgment` / `DeterministicMockJudgmentProvider`).
+Arbitrary provider factories and production provider adapters (e.g. `mistral_external`)
+cannot be executed under J1 contract-only authority. Production `JUDGMENT` capability
+admission remains future work (J2+).
+
 ## Non-goals
 
 - This authorization does not add a `JUDGMENT` enum value, catalog entries,

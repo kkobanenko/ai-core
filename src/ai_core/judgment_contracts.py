@@ -211,16 +211,14 @@ class JudgmentProvider(Protocol):
 def invoke_judgment(
     request: JudgmentRequest,
     *,
-    provider_factory: Callable[[], JudgmentProvider] | None = None,
+    mock_behavior: object = None,
     clock: Callable[[], float] = time.monotonic,
     decision_pack_known: Callable[[str, str], bool] | None = None,
 ) -> JudgmentResponse:
-    """Проверить запрос, каталог, пакет, приватность, срок, затем провайдера.
+    """Проверить запрос, пакет, приватность, срок, затем выполнить детерминированный мок.
 
-    Повтор и запасной провайдер в J1 не выполняются.
-    Общий монотонный срок остаётся одним на будущий повтор.
-    decision_pack_known отвечает только «пара id/version известна».
-    Без этого ответа пакет не считается известным.
+    В J1 разрешено исполнение ТОЛЬКО репозиторного детерминированного мока mock_judgment.
+    Исполнение реальных провайдеров и фабрик запрещено до авторизации J2 и допуска JUDGMENT.
     """
     started = _safe_now(clock)
     if not isinstance(request, JudgmentRequest):
@@ -231,7 +229,11 @@ def invoke_judgment(
         return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
     if invalid is not None:
         return _unvalidated_error(invalid, _safe_latency(started, clock))
-    if _provider_boundary_error(request) is not None:
+    # В J1 callable execution path разрешён только mock_judgment
+    if request.provider != "mock_judgment":
+        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
+    # mock_judgment имеет фиксированную доверенную границу LOCAL_SAME_HOST без hosted_boundary
+    if request.network_boundary is not NetworkBoundary.LOCAL_SAME_HOST or request.hosted_boundary:
         return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
     if not _decision_pack_known(request, decision_pack_known):
         return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
@@ -240,27 +242,22 @@ def invoke_judgment(
     if not _deadline_open(request, clock):
         return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _safe_latency(started, clock))
     try:
-        # Готовый объект не принимаем: его конструктор обошёл бы проверку приватности.
-        if provider_factory is None:
-            return _error_response(request, JudgmentErrorCategory.INTERNAL_ERROR, _safe_latency(started, clock))
-        active = provider_factory()
-        # Фабрика могла съесть срок. judge после этого не стартует.
+        from ai_core.judgment_mock import DeterministicMockJudgmentProvider, MockBehavior
+        behavior = mock_behavior if isinstance(mock_behavior, MockBehavior) else MockBehavior()
+        active = DeterministicMockJudgmentProvider(behavior)
         ready = _safe_now(clock)
         if not _open_at(request, ready):
             return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency_from(started, ready))
         raw = _judge_within_deadline(active, request, ready)
     except FutureTimeoutError:
-        # judge не вернулся до срока. Его результат наружу не отдаём.
         timed_out = _safe_now(clock)
         return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency_from(started, timed_out))
     except Exception:
-        # Текст исключения наружу не отдаём: в нём может быть нагрузка.
         return _error_response(request, JudgmentErrorCategory.INTERNAL_ERROR, _safe_latency(started, clock))
     try:
         checked = _checked_provider_result(request, raw, 0)
     except (AttributeError, TypeError):
         checked = _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, 0)
-    # Срок и latency читаются после проверки ответа, одним значением часов.
     finished = _safe_now(clock)
     latency = _latency_from(started, finished)
     if not _open_at(request, finished):
@@ -691,11 +688,14 @@ def _identity_text_ok(*values: object) -> bool:
 
 
 def _privacy_allows(request: JudgmentRequest) -> bool:
-    """Граница берётся из каталога. Флаг hosted_boundary её не расширяет."""
-    identity = _governed_identity(request)
-    if identity is None:
-        return False
-    boundary = identity.network_boundary
+    """Граница берётся из каталога или фиксирована для mock_judgment."""
+    if request.provider == "mock_judgment":
+        boundary = NetworkBoundary.LOCAL_SAME_HOST
+    else:
+        identity = _governed_identity(request)
+        if identity is None:
+            return False
+        boundary = identity.network_boundary
     if boundary is NetworkBoundary.UNKNOWN_BOUNDARY:
         return False
     eligible = is_egress_eligible(

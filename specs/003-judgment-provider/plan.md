@@ -18,7 +18,7 @@ deterministic rules, human gates, and baseline behavior on failure.
 
 J1 will add a small judgment-specific contract boundary rather than reuse text
 completion or JSON-mode APIs. A validated request flows through privacy/egress
-gating, catalog eligibility for the future `JUDGMENT` capability, one
+gating, restricted deterministic mock execution (J1 mock-only execution does not use a production JUDGMENT admission; real provider execution remains blocked until future admission exists), one
 deadline-bounded execution loop, response validation, and metadata-only
 telemetry. Consumers retain decision packs, thresholds, deterministic rules,
 and durable workflow retry.
@@ -35,8 +35,7 @@ remain J2-or-later work.
   all documented as `accepted-in-canon, implementation pending`.
 - Current runtime provider identities and capabilities are not modified by this
   documentation package.
-- A future J1 implementation must add `JUDGMENT` as a distinct capability; it
-  must not make text or structured JSON authorization equivalent to judgment.
+- J1 execution is restricted to deterministic mock_judgment only; real provider execution requires future JUDGMENT admission (J2+). Text or structured JSON authorization does not grant judgment authority.
 - One total monotonic deadline includes validation, bounded retry, and any
   allowed fallback. Retry/fallback loops must have one owner.
 - Privacy/egress denial occurs before transport construction, credential lookup,
