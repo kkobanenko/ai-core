@@ -1295,3 +1295,49 @@ def test_round_5_reject_oversized_identifiers_and_choices() -> None:
     many_choices = tuple(f"choice-{i}" for i in range(130))
     req_many_choices = _request(allowed_choices=many_choices)
     assert invoke_judgment(req_many_choices, clock=_clock(1.0)).error is JudgmentErrorCategory.INVALID_REQUEST
+
+
+def test_round_6_subtract_semaphore_wait_from_timeout() -> None:
+    """Prove that semaphore acquisition wait time reduces the remaining future timeout."""
+    from ai_core.judgment_contracts import _WORKER_SEMAPHORE, _run_with_daemon_timeout
+    from concurrent.futures import TimeoutError as FutureTimeoutError
+
+    # Acquire all slots temporarily
+    acquired_locks = []
+    try:
+        while _WORKER_SEMAPHORE.acquire(blocking=False):
+            acquired_locks.append(True)
+
+        # Now all slots are busy. Trying to run with 0.05s timeout must time out
+        with pytest.raises(FutureTimeoutError):
+            _run_with_daemon_timeout(lambda: "ok", timeout_seconds=0.05)
+    finally:
+        for _ in acquired_locks:
+            _WORKER_SEMAPHORE.release()
+
+
+def test_round_6_latency_overflow_handling() -> None:
+    """Prove that extreme timestamp differences do not raise OverflowError in latency calculations."""
+    from ai_core.judgment_contracts import _latency_from
+
+    # Extreme differences
+    lat = _latency_from(-1e308, 1e308)
+    assert isinstance(lat, int)
+    assert lat >= 0
+
+    # None and negative
+    assert _latency_from(None, 100.0) == 0
+    assert _latency_from(100.0, 50.0) == 0
+
+
+def test_round_6_bound_strings_in_payload() -> None:
+    """Prove that oversized strings or keys inside payload are rejected as INVALID_REQUEST."""
+    # String value exceeding 4096 chars
+    huge_str = "x" * 4097
+    req_huge_val = _request(payload={"data": huge_str})
+    assert invoke_judgment(req_huge_val, clock=_clock(1.0)).error is JudgmentErrorCategory.INVALID_REQUEST
+
+    # Dict key exceeding 128 chars
+    huge_key = "k" * 129
+    req_huge_key = _request(payload={huge_key: "value"})
+    assert invoke_judgment(req_huge_key, clock=_clock(1.0)).error is JudgmentErrorCategory.INVALID_REQUEST

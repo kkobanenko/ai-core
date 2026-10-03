@@ -638,6 +638,8 @@ def _request_error(request: JudgmentRequest) -> JudgmentErrorCategory | None:
 
 _MAX_PAYLOAD_DEPTH = 32
 _MAX_PAYLOAD_NODES = 2048
+_MAX_PAYLOAD_STRING_LENGTH = 4096
+_MAX_PAYLOAD_KEY_LENGTH = 128
 
 
 def _is_valid_payload_shape(value: object) -> bool:
@@ -659,7 +661,7 @@ def _is_valid_payload_shape(value: object) -> bool:
         if type(item) is bool:
             return True
         if type(item) is str:
-            return True
+            return len(item) <= _MAX_PAYLOAD_STRING_LENGTH
         if type(item) is int:
             return item.bit_length() <= 1023
         if type(item) is float:
@@ -683,7 +685,7 @@ def _is_valid_payload_shape(value: object) -> bool:
             seen_ids.add(item_id)
             try:
                 for k, v in item.items():
-                    if type(k) is not str:
+                    if type(k) is not str or len(k) == 0 or len(k) > _MAX_PAYLOAD_KEY_LENGTH:
                         return False
                     if not _check(v, depth + 1):
                         return False
@@ -836,10 +838,16 @@ def _open_at(request: JudgmentRequest, now: float | None) -> bool:
 def _latency_from(started: float | None, now: float | None) -> int:
     if now is None or started is None:
         return 0
-    elapsed = now - started
-    if elapsed < 0:
+    try:
+        elapsed = now - started
+        if elapsed < 0 or not math.isfinite(elapsed):
+            return 0
+        val = elapsed * 1000
+        if not math.isfinite(val) or val > 2147483647:
+            return 2147483647
+        return int(val)
+    except (OverflowError, ValueError, TypeError):
         return 0
-    return int(elapsed * 1000)
 
 
 _MAX_CONCURRENT_WORKERS = 16
@@ -852,8 +860,15 @@ def _run_with_daemon_timeout(func: Callable, *args: object, timeout_seconds: flo
     if timeout_seconds <= 0:
         raise FutureTimeoutError()
 
+    start_wait = time.monotonic()
     acquired = _WORKER_SEMAPHORE.acquire(blocking=True, timeout=timeout_seconds)
     if not acquired:
+        raise FutureTimeoutError()
+
+    wait_elapsed = time.monotonic() - start_wait
+    remaining = timeout_seconds - wait_elapsed
+    if remaining <= 0:
+        _WORKER_SEMAPHORE.release()
         raise FutureTimeoutError()
 
     future: Future = Future()
@@ -871,7 +886,7 @@ def _run_with_daemon_timeout(func: Callable, *args: object, timeout_seconds: flo
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
-    return future.result(timeout=timeout_seconds)
+    return future.result(timeout=remaining)
 
 
 def _judge_within_deadline(active: JudgmentProvider, request: JudgmentRequest, now: float) -> object:
@@ -1166,9 +1181,4 @@ def _safe_now(clock: Callable[[], float]) -> float | None:
 
 def _safe_latency(started: float | None, clock: Callable[[], float]) -> int:
     now = _safe_now(clock)
-    if now is None or started is None:
-        return 0
-    elapsed = now - started
-    if elapsed < 0:
-        return 0
-    return int(elapsed * 1000)
+    return _latency_from(started, now)
