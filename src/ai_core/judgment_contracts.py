@@ -224,7 +224,7 @@ def invoke_judgment(
         return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
     try:
         invalid = _request_error(request)
-    except (AttributeError, TypeError):
+    except (AttributeError, TypeError, OverflowError):
         return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
     if invalid is not None:
         return _unvalidated_error(invalid, _safe_latency(started, clock))
@@ -238,6 +238,9 @@ def invoke_judgment(
             if provider_factory is None:
                 return _error_response(request, JudgmentErrorCategory.INTERNAL_ERROR, _safe_latency(started, clock))
             active = provider_factory()
+            # Фабрика могла съесть срок. judge после этого не стартует.
+            if not _deadline_open(request, clock):
+                return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _safe_latency(started, clock))
         raw = active.judge(request)
     except Exception:
         # Текст исключения наружу не отдаём: в нём может быть нагрузка.
@@ -398,12 +401,12 @@ def _structural_problem(response: JudgmentResponse) -> str | None:
     telemetry = response.telemetry
     if not isinstance(telemetry, JudgmentTelemetry):
         return "telemetry"
-    if telemetry.retry_count < 0 or telemetry.latency_ms < 0:
+    if not isinstance(telemetry.outcome, JudgmentOutcome):
+        return "telemetry outcome type"
+    if telemetry.error_category is not None and not isinstance(telemetry.error_category, JudgmentErrorCategory):
+        return "telemetry error type"
+    if not _nonnegative_int(telemetry.retry_count) or not _nonnegative_int(telemetry.latency_ms):
         return "telemetry range"
-    if not isinstance(telemetry.retry_count, int) or isinstance(telemetry.retry_count, bool):
-        return "retry type"
-    if not isinstance(telemetry.latency_ms, int) or isinstance(telemetry.latency_ms, bool):
-        return "latency type"
     if (
         telemetry.provider != response.provider
         or telemetry.model != response.model
@@ -476,9 +479,12 @@ def _json_bool(value: object, name: str) -> bool:
 
 
 def _json_number(value: object, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+    if not _finite_number(value):
         raise ValueError(f"{name} must be a finite number")
-    return float(value)
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except OverflowError as exc:
+        raise ValueError(f"{name} must be a finite number") from exc
 
 
 def _json_int(value: object, name: str) -> int:
@@ -566,7 +572,7 @@ def _request_error(request: JudgmentRequest) -> JudgmentErrorCategory | None:
         return JudgmentErrorCategory.INVALID_REQUEST
     if not isinstance(request.deadline_monotonic, (int, float)) or isinstance(request.deadline_monotonic, bool):
         return JudgmentErrorCategory.INVALID_REQUEST
-    if not math.isfinite(float(request.deadline_monotonic)):
+    if not _finite_number(request.deadline_monotonic):
         return JudgmentErrorCategory.INVALID_REQUEST
     if request.score_scale is not None and not _scale_ok(request.score_scale):
         return JudgmentErrorCategory.INVALID_REQUEST
@@ -587,9 +593,23 @@ def _scale_ok(scale: object) -> bool:
 
 
 def _finite_number(value: object) -> bool:
+    """Конечное число. Огромный int не превращается в OverflowError."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
-    return math.isfinite(value)
+    if isinstance(value, int) and value.bit_length() > 1023:
+        return False
+    try:
+        number = float(value)
+    except OverflowError:
+        return False
+    return math.isfinite(number)
+
+
+def _nonnegative_int(value: object) -> bool:
+    """Сначала тип. Потом знак. bool не является счётчиком."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return False
+    return value >= 0
 
 
 def _exact_pin(value: object) -> bool:
@@ -603,7 +623,9 @@ def _exact_pin(value: object) -> bool:
 
 
 def _privacy_allows(request: JudgmentRequest) -> bool:
-    """Внешняя граница всегда строже. Флаг hosted_boundary права не расширяет."""
+    """Неизвестная граница не даёт права. Флаг hosted_boundary их не расширяет."""
+    if request.network_boundary is NetworkBoundary.UNKNOWN_BOUNDARY:
+        return False
     eligible = is_egress_eligible(
         data_class=request.data_class,
         outbound_form=request.outbound_form,
@@ -620,7 +642,13 @@ def _privacy_allows(request: JudgmentRequest) -> bool:
 
 
 def _deadline_open(request: JudgmentRequest, clock: Callable[[], float]) -> bool:
-    return _safe_now(clock) < float(request.deadline_monotonic)
+    if not _finite_number(request.deadline_monotonic):
+        return False
+    try:
+        deadline = float(request.deadline_monotonic)
+    except OverflowError:
+        return False
+    return _safe_now(clock) < deadline
 
 
 def _checked_provider_result(request: JudgmentRequest, raw: object, latency_ms: int) -> JudgmentResponse:

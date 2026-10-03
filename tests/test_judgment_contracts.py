@@ -708,3 +708,125 @@ def test_c4_telemetry_outcome_is_closed() -> None:
     with pytest.raises(ValueError):
         response_from_json(json.dumps(document))
     assert response_from_json(response_to_json(choice)).telemetry.outcome is JudgmentOutcome.CHOICE
+
+
+def test_d1_unknown_network_boundary_fails_closed() -> None:
+    """UNKNOWN не даёт права ни одному классу. hosted_boundary=false это не меняет."""
+    for data_class in DataClass:
+        for hosted in (False, True):
+            fixture = SpyProvider(_choice())
+            response = invoke_judgment(
+                _request(
+                    data_class=data_class,
+                    network_boundary=NetworkBoundary.UNKNOWN_BOUNDARY,
+                    request_egress_authorized=True,
+                    hosted_boundary=hosted,
+                ),
+                provider_factory=fixture.factory,
+                clock=_clock(1.0),
+            )
+            assert response.error in {
+                JudgmentErrorCategory.PRIVACY_EGRESS_DENIED,
+                JudgmentErrorCategory.INVALID_REQUEST,
+            }
+            assert fixture.built == 0
+            assert fixture.calls == 0
+
+
+def test_d1_privacy_matrix_uses_real_enums() -> None:
+    external_denied = {DataClass.PUBLIC_POSSIBLE_PII, DataClass.PRIVATE_CLIENT_DATA, DataClass.SECRET}
+    hosted_ok = {DataClass.SYNTHETIC, DataClass.PUBLIC_NO_PII}
+    for boundary in NetworkBoundary:
+        for data_class in DataClass:
+            for egress in (False, True):
+                for hosted in (False, True):
+                    fixture = SpyProvider(_choice())
+                    response = invoke_judgment(
+                        _request(
+                            data_class=data_class,
+                            network_boundary=boundary,
+                            request_egress_authorized=egress,
+                            hosted_boundary=hosted,
+                        ),
+                        provider_factory=fixture.factory,
+                        clock=_clock(1.0),
+                    )
+                    contradictory = hosted is True and boundary is not NetworkBoundary.EXTERNAL
+                    denied = (
+                        contradictory
+                        or boundary is NetworkBoundary.UNKNOWN_BOUNDARY
+                        or data_class is DataClass.SECRET
+                        or (boundary is NetworkBoundary.EXTERNAL and (egress is False or data_class in external_denied))
+                    )
+                    if denied:
+                        assert fixture.built == 0
+                        assert fixture.calls == 0
+                    else:
+                        assert response.choice == Choice("yes")
+                        assert fixture.calls == 1
+
+
+def test_d2_factory_expiry_skips_judge() -> None:
+    class Clock:
+        def __init__(self) -> None:
+            self.after_factory = False
+
+        def __call__(self) -> float:
+            return 1.1 if self.after_factory else 0.2
+
+    clock = Clock()
+    fixture = SpyProvider(_choice())
+
+    def factory():
+        clock.after_factory = True
+        return fixture.factory()
+
+    response = invoke_judgment(_request(deadline_monotonic=1.0), provider_factory=factory, clock=clock)
+    assert response.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
+    assert fixture.built == 1
+    assert fixture.calls == 0
+
+
+def test_d3_huge_deadline_is_invalid_request() -> None:
+    for value in (10**400, -(10**400), float("nan"), float("inf"), float("-inf"), True, "1"):
+        fixture = SpyProvider(_choice())
+        response = invoke_judgment(
+            _request(deadline_monotonic=value),  # type: ignore[arg-type]
+            provider_factory=fixture.factory,
+            clock=_clock(1.0),
+        )
+        assert response.error is JudgmentErrorCategory.INVALID_REQUEST
+        assert fixture.built == 0
+    huge_scale = invoke_judgment(
+        _request(score_scale=ScoreScale("fit", 0.0, 10**400)),  # type: ignore[arg-type]
+        provider_factory=SpyProvider(_choice()).factory,
+        clock=_clock(1.0),
+    )
+    assert huge_scale.error is JudgmentErrorCategory.INVALID_REQUEST
+
+
+def test_d4_telemetry_type_before_range() -> None:
+    base = _choice()
+    for latency, retry in (("bad", 0), (None, 0), (True, 0), (0, "bad"), (0, None), (0, True), (-1, 0), (0, -1)):
+        response = JudgmentResponse(
+            provider=base.provider,
+            model=base.model,
+            model_version=base.model_version,
+            decision_pack_id=base.decision_pack_id,
+            decision_pack_version=base.decision_pack_version,
+            telemetry=JudgmentTelemetry(
+                JudgmentOutcome.CHOICE,
+                None,
+                latency,  # type: ignore[arg-type]
+                retry,  # type: ignore[arg-type]
+                base.provider,
+                base.model,
+                base.model_version,
+                base.decision_pack_id,
+                base.decision_pack_version,
+            ),
+            choice=Choice("yes"),
+        )
+        with pytest.raises(ValueError):
+            response_to_json(response)
+        assert validate_response_for_request(response, _request()) is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
