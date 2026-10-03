@@ -388,14 +388,25 @@ def response_from_json(text: str) -> JudgmentResponse:
 
 
 def validate_response_for_request(response: object, request: JudgmentRequest) -> JudgmentErrorCategory | None:
-    """Проверить ответ относительно запроса. None значит структура пригодна."""
+    """Проверить контракт пары запрос/ответ.
+
+    None значит ответ годен для этого запроса.
+    Нормализованная ошибка провайдера тоже годна: это не провал проверки.
+    """
+    if not isinstance(request, JudgmentRequest):
+        return JudgmentErrorCategory.INVALID_REQUEST
+    try:
+        request_problem = _request_error(request)
+    except (AttributeError, TypeError, RuntimeError, OverflowError, RecursionError):
+        return JudgmentErrorCategory.INVALID_REQUEST
+    if request_problem is not None:
+        return request_problem
     if not isinstance(response, JudgmentResponse):
         return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
     try:
-        checked = _checked_provider_result(request, response, 0)
-    except (AttributeError, TypeError, ValueError, RuntimeError):
+        return _response_problem_for_request(response, request)
+    except (AttributeError, TypeError, RuntimeError, OverflowError, RecursionError):
         return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
-    return checked.error
 
 
 def grants_authority(response: JudgmentResponse) -> bool:
@@ -585,10 +596,23 @@ def _answer_matches(question: Question, answer: object) -> bool:
     return False
 
 
+def _response_problem_for_request(response: JudgmentResponse, request: JudgmentRequest) -> JudgmentErrorCategory | None:
+    """None значит ответ годен. Ошибка вызова здесь не считается браком ответа."""
+    if _structural_problem(response) is not None:
+        return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+    if not _identity_matches(request, response):
+        return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+    if response.error is not None:
+        return None
+    if not _answers_match_questions(request, response.answers):
+        return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+    return None
+
+
 def _checked_provider_result(request: JudgmentRequest, raw: object, latency_ms: int) -> JudgmentResponse:
     if not isinstance(raw, JudgmentResponse):
         return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
-    if not _response_identity_ok(raw) or not _identity_matches(request, raw):
+    if not _response_identity_ok(raw) or not _telemetry_identity_matches_response(raw) or not _identity_matches(request, raw):
         return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
     has_error = raw.error is not None
     has_answers = raw.answers is not None
@@ -630,6 +654,20 @@ def _response_identity_ok(raw: JudgmentResponse) -> bool:
     )
 
 
+def _telemetry_identity_matches_response(response: JudgmentResponse) -> bool:
+    """Сначала тип и пин. Потом равенство. Враждебный __eq__ сюда не доходит."""
+    if not _response_identity_ok(response):
+        return False
+    telemetry = response.telemetry
+    return (
+        telemetry.provider == response.provider
+        and telemetry.model == response.model
+        and telemetry.model_version == response.model_version
+        and telemetry.decision_pack_id == response.decision_pack_id
+        and telemetry.decision_pack_version == response.decision_pack_version
+    )
+
+
 def _identity_matches(request: JudgmentRequest, raw: JudgmentResponse) -> bool:
     return (
         raw.provider == request.provider
@@ -637,11 +675,6 @@ def _identity_matches(request: JudgmentRequest, raw: JudgmentResponse) -> bool:
         and raw.model_version == request.model_version
         and raw.decision_pack_id == request.decision_pack_id
         and raw.decision_pack_version == request.decision_pack_version
-        and raw.telemetry.provider == raw.provider
-        and raw.telemetry.model == raw.model
-        and raw.telemetry.model_version == raw.model_version
-        and raw.telemetry.decision_pack_id == raw.decision_pack_id
-        and raw.telemetry.decision_pack_version == raw.decision_pack_version
     )
 
 
@@ -652,7 +685,7 @@ def _identity_text_ok(*values: object) -> bool:
 def _structural_problem(response: JudgmentResponse) -> str | None:
     if not isinstance(response, JudgmentResponse):
         return "response type"
-    if not _response_identity_ok(response):
+    if not _response_identity_ok(response) or not _telemetry_identity_matches_response(response):
         return "identity"
     telemetry = response.telemetry
     if not isinstance(telemetry.outcome, JudgmentOutcome):

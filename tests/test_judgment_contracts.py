@@ -18,11 +18,13 @@ from ai_core.judgment_contracts import (
     JudgmentOutcome,
     JudgmentRequest,
     JudgmentResponse,
+    JudgmentTelemetry,
     ScoreAnswer,
     ScoreQuestion,
     _DISTRIBUTION_SUM_TOLERANCE,
     _MAX_QUESTIONS,
     grants_authority,
+    validate_response_for_request,
     invoke_judgment as _invoke_judgment,
     request_from_json,
     request_to_json,
@@ -382,6 +384,160 @@ def test_standalone_answer_structural_validation() -> None:
 
 def _names(pairs) -> list[str]:
     return [name for name, _value in pairs]
+
+
+def _error_response(request: JudgmentRequest, category: JudgmentErrorCategory) -> JudgmentResponse:
+    telemetry = JudgmentTelemetry(
+        JudgmentOutcome.ERROR,
+        category,
+        0,
+        0,
+        request.provider,
+        request.model,
+        request.model_version,
+        request.decision_pack_id,
+        request.decision_pack_version,
+    )
+    return JudgmentResponse(
+        provider=request.provider,
+        model=request.model,
+        model_version=request.model_version,
+        decision_pack_id=request.decision_pack_id,
+        decision_pack_version=request.decision_pack_version,
+        telemetry=telemetry,
+        answers=None,
+        error=category,
+    )
+
+
+def test_invalid_request_is_rejected_before_response_match() -> None:
+    request = _request(questions=(("same", BinaryQuestion("a")), ("same", BinaryQuestion("b"))))
+    answers = (("same", BinaryAnswer(1.0)), ("same", BinaryAnswer(1.0)))
+    raw = _success_shell(_request(), answers)
+    assert validate_response_for_request(raw, request) is JudgmentErrorCategory.INVALID_REQUEST
+    broken = _request(questions=(("label", ChoiceQuestion(())),))
+    assert validate_response_for_request(_success_shell(_request(), _binary_answer()), broken) is JudgmentErrorCategory.INVALID_REQUEST
+    good = invoke_judgment(_request(), clock=_clock(1.0))
+    assert validate_response_for_request(good, _request()) is None
+
+
+def test_valid_normalized_error_is_not_a_validation_failure() -> None:
+    request = _request()
+    for category in (
+        JudgmentErrorCategory.PROVIDER_UNAVAILABLE,
+        JudgmentErrorCategory.RATE_LIMITED,
+        JudgmentErrorCategory.TRANSPORT_FAILED,
+    ):
+        response = _error_response(request, category)
+        assert validate_response_for_request(response, request) is None
+        assert response_from_json(response_to_json(response)) == response
+    both = _error_response(request, JudgmentErrorCategory.PROVIDER_UNAVAILABLE)
+    both = JudgmentResponse(
+        provider=both.provider,
+        model=both.model,
+        model_version=both.model_version,
+        decision_pack_id=both.decision_pack_id,
+        decision_pack_version=both.decision_pack_version,
+        telemetry=both.telemetry,
+        answers=_binary_answer(),
+        error=JudgmentErrorCategory.PROVIDER_UNAVAILABLE,
+    )
+    assert validate_response_for_request(both, request) is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+    mismatched_category = JudgmentResponse(
+        provider=both.provider,
+        model=both.model,
+        model_version=both.model_version,
+        decision_pack_id=both.decision_pack_id,
+        decision_pack_version=both.decision_pack_version,
+        telemetry=JudgmentTelemetry(
+            JudgmentOutcome.ERROR,
+            JudgmentErrorCategory.RATE_LIMITED,
+            0,
+            0,
+            request.provider,
+            request.model,
+            request.model_version,
+            request.decision_pack_id,
+            request.decision_pack_version,
+        ),
+        answers=None,
+        error=JudgmentErrorCategory.PROVIDER_UNAVAILABLE,
+    )
+    assert validate_response_for_request(mismatched_category, request) is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+    success_outcome = JudgmentResponse(
+        provider=both.provider,
+        model=both.model,
+        model_version=both.model_version,
+        decision_pack_id=both.decision_pack_id,
+        decision_pack_version=both.decision_pack_version,
+        telemetry=JudgmentTelemetry(
+            JudgmentOutcome.SUCCESS,
+            None,
+            0,
+            0,
+            request.provider,
+            request.model,
+            request.model_version,
+            request.decision_pack_id,
+            request.decision_pack_version,
+        ),
+        answers=None,
+        error=JudgmentErrorCategory.PROVIDER_UNAVAILABLE,
+    )
+    assert validate_response_for_request(success_outcome, request) is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+
+
+def test_telemetry_identity_must_match_response() -> None:
+    request = _request()
+    success = invoke_judgment(request, clock=_clock(1.0))
+    error = _error_response(request, JudgmentErrorCategory.PROVIDER_UNAVAILABLE)
+    assert validate_response_for_request(success, request) is None
+    assert validate_response_for_request(error, request) is None
+    assert response_from_json(response_to_json(success)) == success
+    assert response_from_json(response_to_json(error)) == error
+    fields = {
+        "provider": "mistral_external",
+        "model": "other-model",
+        "model_version": "9",
+        "decision_pack_id": "other-pack",
+        "decision_pack_version": "9",
+    }
+    for field, replacement in fields.items():
+        values = {
+            "provider": success.provider,
+            "model": success.model,
+            "model_version": success.model_version,
+            "decision_pack_id": success.decision_pack_id,
+            "decision_pack_version": success.decision_pack_version,
+        }
+        values[field] = replacement
+        telemetry = JudgmentTelemetry(
+            JudgmentOutcome.SUCCESS,
+            None,
+            0,
+            0,
+            values["provider"],
+            values["model"],
+            values["model_version"],
+            values["decision_pack_id"],
+            values["decision_pack_version"],
+        )
+        mismatched = JudgmentResponse(
+            provider=success.provider,
+            model=success.model,
+            model_version=success.model_version,
+            decision_pack_id=success.decision_pack_id,
+            decision_pack_version=success.decision_pack_version,
+            telemetry=telemetry,
+            answers=success.answers,
+        )
+        with pytest.raises(ValueError):
+            response_to_json(mismatched)
+        assert validate_response_for_request(mismatched, request) is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+        document = json.loads(response_to_json(success))
+        document["telemetry"][field] = replacement
+        with pytest.raises(ValueError):
+            response_from_json(json.dumps(document))
 
 
 def test_probability_order_round_trip() -> None:
