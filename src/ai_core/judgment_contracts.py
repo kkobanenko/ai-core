@@ -235,12 +235,20 @@ def invoke_judgment(
     # mock_judgment имеет фиксированную доверенную границу LOCAL_SAME_HOST без hosted_boundary
     if request.network_boundary is not NetworkBoundary.LOCAL_SAME_HOST or request.hosted_boundary:
         return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
-    if not _decision_pack_known(request, decision_pack_known):
+    dp_now = _safe_now(clock)
+    if not _open_at(request, dp_now):
+        return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency_from(started, dp_now))
+    try:
+        dp_ok = _decision_pack_known(request, decision_pack_known, dp_now)
+    except FutureTimeoutError:
+        timed_out = _safe_now(clock)
+        return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency_from(started, timed_out))
+    except Exception:
+        dp_ok = False
+    if not dp_ok:
         return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
     if not _privacy_allows(request):
         return _error_response(request, JudgmentErrorCategory.PRIVACY_EGRESS_DENIED, _safe_latency(started, clock))
-    if not _deadline_open(request, clock):
-        return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _safe_latency(started, clock))
     try:
         from ai_core.judgment_mock import DeterministicMockJudgmentProvider, MockBehavior
         behavior = mock_behavior if isinstance(mock_behavior, MockBehavior) else MockBehavior()
@@ -269,7 +277,7 @@ def request_to_json(request: JudgmentRequest) -> str:
     """Стабильный JSON запроса. Невалидный запрос не сериализуется."""
     if not isinstance(request, JudgmentRequest) or _request_error(request) is not None:
         raise ValueError("request is not a valid J1 contract")
-    return json.dumps(_request_document(request), ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return json.dumps(_request_document(request), ensure_ascii=True, separators=(",", ":"), sort_keys=True, allow_nan=False)
 
 
 def request_from_json(text: str) -> JudgmentRequest:
@@ -318,7 +326,7 @@ def response_to_json(response: JudgmentResponse) -> str:
     """Стабильный JSON ответа. Невалидная структура не сериализуется."""
     if _structural_problem(response) is not None:
         raise ValueError("response is not a valid J1 contract")
-    return json.dumps(_response_document(response), ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return json.dumps(_response_document(response), ensure_ascii=True, separators=(",", ":"), sort_keys=True, allow_nan=False)
 
 
 def response_from_json(text: str) -> JudgmentResponse:
@@ -577,14 +585,14 @@ def _request_error(request: JudgmentRequest) -> JudgmentErrorCategory | None:
         request.model,
         request.model_version,
     )
-    if any(not isinstance(item, str) for item in names):
+    if any(type(item) is not str for item in names):
         return JudgmentErrorCategory.INVALID_REQUEST
     if any(not _exact_pin(item) for item in names):
         return JudgmentErrorCategory.INVALID_REQUEST
     choices = request.allowed_choices
     if not isinstance(choices, tuple):
         return JudgmentErrorCategory.INVALID_REQUEST
-    if any(not isinstance(item, str) for item in choices):
+    if any(type(item) is not str for item in choices):
         return JudgmentErrorCategory.INVALID_REQUEST
     if len(choices) == 0 or len(set(choices)) != len(choices):
         return JudgmentErrorCategory.INVALID_REQUEST
@@ -671,14 +679,29 @@ def _provider_boundary_error(request: JudgmentRequest) -> JudgmentErrorCategory 
 def _decision_pack_known(
     request: JudgmentRequest,
     resolver: Callable[[str, str], bool] | None,
+    now: float | None = None,
 ) -> bool:
-    """Нет резолвера, ошибка резолвера или не-True — пакет неизвестен."""
+    """Нет резолвера, ошибка резолвера, превышение срока или не-True — пакет неизвестен."""
     if not callable(resolver):
         return False
-    try:
-        known = resolver(request.decision_pack_id, request.decision_pack_version)
-    except Exception:
-        return False
+    if now is not None:
+        try:
+            remaining = float(request.deadline_monotonic) - now
+        except OverflowError:
+            remaining = 0.0
+        if remaining <= 0:
+            raise FutureTimeoutError()
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(resolver, request.decision_pack_id, request.decision_pack_version)
+        try:
+            known = future.result(timeout=remaining)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+    else:
+        try:
+            known = resolver(request.decision_pack_id, request.decision_pack_version)
+        except Exception:
+            return False
     return known is True
 
 

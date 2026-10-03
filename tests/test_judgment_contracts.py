@@ -995,3 +995,44 @@ def test_h3_latency_is_measured_after_validation() -> None:
     assert late.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
     assert late.choice is None
     assert late.telemetry.latency_ms == 1500
+
+
+def test_round_1_resolver_deadline_bounded() -> None:
+    """Test that a blocking decision-pack resolver times out within the deadline."""
+    def blocking_resolver(pack_id: str, version: str) -> bool:
+        time.sleep(2.0)
+        return True
+
+    started = time.monotonic()
+    req = _request(deadline_monotonic=started + 0.1)
+    res = invoke_judgment(req, decision_pack_known=blocking_resolver)
+    elapsed = time.monotonic() - started
+    assert res.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
+    assert res.choice is None
+    assert elapsed < 1.5
+
+
+def test_round_1_reject_hostile_str_subclass() -> None:
+    """Test that hostile str subclasses overriding __ne__ are rejected as INVALID_REQUEST."""
+    class HostileStr(str):
+        def __ne__(self, other: object) -> bool:
+            raise RuntimeError("hostile ne override invoked")
+
+    req = _request(provider=HostileStr("mock_judgment"))
+    res = invoke_judgment(req, clock=_clock(1.0))
+    assert res.error is JudgmentErrorCategory.INVALID_REQUEST
+
+    req_model = _request(model=HostileStr("fixture-model"))
+    res_model = invoke_judgment(req_model, clock=_clock(1.0))
+    assert res_model.error is JudgmentErrorCategory.INVALID_REQUEST
+
+
+def test_round_1_reject_non_finite_payload_json() -> None:
+    """Test that payloads containing NaN or Infinity fail json serialization."""
+    req_nan = _request(payload={"value": float("nan")})
+    with pytest.raises(ValueError):
+        request_to_json(req_nan)
+
+    req_inf = _request(payload={"value": float("inf")})
+    with pytest.raises(ValueError):
+        request_to_json(req_inf)
