@@ -1365,3 +1365,95 @@ def test_round_7_fail_closed_on_transient_invalid_initial_clock() -> None:
     assert response.choice is None
     assert response.telemetry.latency_ms == 0
     assert response.provider == req.provider
+
+
+class _HoldClock:
+    """Отдаёт последовательность, потом повторяет последнее значение."""
+
+    def __init__(self, sequence: list[float]) -> None:
+        self._seq = list(sequence)
+        self.last = sequence[-1]
+
+    def __call__(self) -> float:
+        if self._seq:
+            self.last = self._seq.pop(0)
+        return self.last
+
+
+def test_round_8_reject_regressing_clock() -> None:
+    """100 → 90 закрывает срок до резолвера и не показывает Choice."""
+    calls = {"n": 0}
+
+    def resolver(pack_id: str, version: str) -> bool:
+        calls["n"] += 1
+        return True
+
+    response = invoke_judgment(
+        _request(deadline_monotonic=150.0),
+        decision_pack_known=resolver,
+        clock=_HoldClock([100.0, 90.0]),
+    )
+    assert response.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
+    assert response.choice is None
+    assert calls["n"] == 0
+
+
+def test_round_9_clock_order_equivalence() -> None:
+    """Равные и растущие отсчёты живые. Шаг назад после роста закрывает срок."""
+    back = invoke_judgment(
+        _request(deadline_monotonic=150.0),
+        clock=_HoldClock([100.0, 101.0, 99.0]),
+    )
+    assert back.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
+    assert back.choice is None
+    same = invoke_judgment(
+        _request(deadline_monotonic=150.0),
+        clock=_HoldClock([100.0, 100.0, 100.0]),
+    )
+    assert same.choice == Choice("yes")
+    rising = invoke_judgment(
+        _request(deadline_monotonic=150.0),
+        clock=_HoldClock([100.0, 101.0, 102.0]),
+    )
+    assert rising.choice == Choice("yes")
+    assert rising.error is None
+
+
+def test_round_8_separate_resolver_timeout_from_budget_expiry() -> None:
+    """Таймаут резолвера при открытом сроке — не DEADLINE_EXHAUSTED."""
+    def timeout_raising_resolver(pack_id: str, version: str) -> bool:
+        from concurrent.futures import TimeoutError as FutureTimeoutError
+        raise FutureTimeoutError("resolver internal timeout")
+
+    req = _request(deadline_monotonic=100.0)
+    response = invoke_judgment(
+        req,
+        decision_pack_known=timeout_raising_resolver,
+        clock=_clock(1.0),
+    )
+    assert response.error is JudgmentErrorCategory.INVALID_REQUEST
+    assert response.error is not JudgmentErrorCategory.DEADLINE_EXHAUSTED
+    assert response.choice is None
+
+
+def test_round_9_resolver_failure_matrix() -> None:
+    """False и обычное исключение резолвера не пускают мок. Конец срока — DEADLINE_EXHAUSTED."""
+    false_result = invoke_judgment(
+        _request(deadline_monotonic=100.0),
+        decision_pack_known=lambda pack_id, version: False,
+        clock=_clock(1.0),
+    )
+    assert false_result.error is JudgmentErrorCategory.INVALID_REQUEST
+    assert false_result.choice is None
+
+    def explode(pack_id: str, version: str) -> bool:
+        raise RuntimeError("resolver down")
+
+    exploded = invoke_judgment(
+        _request(deadline_monotonic=100.0),
+        decision_pack_known=explode,
+        clock=_clock(1.0),
+    )
+    assert exploded.error is JudgmentErrorCategory.INVALID_REQUEST
+    assert exploded.choice is None
+    assert exploded.error is not JudgmentErrorCategory.DEADLINE_EXHAUSTED

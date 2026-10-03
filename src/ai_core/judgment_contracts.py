@@ -221,60 +221,71 @@ def invoke_judgment(
     В J1 разрешено исполнение ТОЛЬКО репозиторного детерминированного мока mock_judgment.
     Исполнение реальных провайдеров и фабрик запрещено до авторизации J2 и допуска JUDGMENT.
     """
-    started = _safe_now(clock)
+    guard = _ClockGuard(clock)
+    started = guard.read()
+
+    def latency() -> int:
+        # Берём последнее принятое значение. Новый сырой отсчёт здесь не читаем.
+        return _latency_from(started, guard.last)
+
     if not isinstance(request, JudgmentRequest):
-        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
+        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, latency())
     try:
         invalid = _request_error(request)
     except (AttributeError, TypeError, OverflowError, RecursionError):
-        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
+        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, latency())
     if invalid is not None:
-        return _unvalidated_error(invalid, _safe_latency(started, clock))
+        return _unvalidated_error(invalid, latency())
     # В J1 callable execution path разрешён только mock_judgment
     if request.provider != "mock_judgment":
-        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
+        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, latency())
     # mock_judgment имеет фиксированную доверенную границу LOCAL_SAME_HOST без hosted_boundary
     if request.network_boundary is not NetworkBoundary.LOCAL_SAME_HOST or request.hosted_boundary:
-        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
+        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, latency())
     # Привратник приватности проверяется ДО обращения к резолверу decision-pack
     if not _privacy_allows(request):
-        return _error_response(request, JudgmentErrorCategory.PRIVACY_EGRESS_DENIED, _safe_latency(started, clock))
+        return _error_response(request, JudgmentErrorCategory.PRIVACY_EGRESS_DENIED, latency())
     if started is None:
         return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, 0)
-    dp_now = _safe_now(clock)
-    if not _open_at(request, dp_now):
+    # Отсчёт перед резолвером. Назад или мусор закрывают срок до резолвера.
+    dp_now = guard.read()
+    if dp_now is None or not _open_at(request, dp_now):
         return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency_from(started, dp_now))
     try:
         dp_ok = _decision_pack_known(request, decision_pack_known, dp_now)
     except FutureTimeoutError:
-        timed_out = _safe_now(clock)
-        return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency_from(started, timed_out))
+        # Класс исключения не равен концу общего срока. Решает следующий отсчёт часов.
+        timed_out = guard.read()
+        if timed_out is None or not _open_at(request, timed_out):
+            return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency_from(started, timed_out))
+        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _latency_from(started, timed_out))
     except Exception:
-        dp_ok = False
+        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, latency())
     if not dp_ok:
-        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
+        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, latency())
     try:
         from ai_core.judgment_mock import DeterministicMockJudgmentProvider, MockBehavior
         behavior = mock_behavior if isinstance(mock_behavior, MockBehavior) else MockBehavior()
         active = DeterministicMockJudgmentProvider(behavior)
-        ready = _safe_now(clock)
-        if not _open_at(request, ready):
+        # Отсчёт после резолвера и до mock. Назад — мок не стартует.
+        ready = guard.read()
+        if ready is None or not _open_at(request, ready):
             return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency_from(started, ready))
         raw = _judge_within_deadline(active, request, ready)
     except FutureTimeoutError:
-        timed_out = _safe_now(clock)
+        timed_out = guard.read()
         return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency_from(started, timed_out))
     except Exception:
-        return _error_response(request, JudgmentErrorCategory.INTERNAL_ERROR, _safe_latency(started, clock))
+        return _error_response(request, JudgmentErrorCategory.INTERNAL_ERROR, latency())
     try:
         checked = _checked_provider_result(request, raw, 0)
     except (AttributeError, TypeError, ValueError, RuntimeError):
         checked = _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, 0)
-    finished = _safe_now(clock)
-    latency = _latency_from(started, finished)
-    if not _open_at(request, finished):
-        return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, latency)
-    return _with_latency(checked, latency)
+    # Финальный отсчёт после проверки ответа. Он же задаёт latency.
+    finished = guard.read()
+    if finished is None or not _open_at(request, finished):
+        return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency_from(started, finished))
+    return _with_latency(checked, _latency_from(started, finished))
 
 
 def request_to_json(request: JudgmentRequest) -> str:
@@ -1164,6 +1175,23 @@ def _response_document(response: JudgmentResponse) -> dict:
             "retry_count": response.telemetry.retry_count,
         },
     }
+
+
+class _ClockGuard:
+    """Часы одного вызова. Следующий отсчёт не может быть меньше предыдущего."""
+
+    def __init__(self, clock: Callable[[], float]) -> None:
+        self._clock = clock
+        self.last: float | None = None
+
+    def read(self) -> float | None:
+        sample = _safe_now(self._clock)
+        if sample is None:
+            return None
+        if self.last is not None and sample < self.last:
+            return None
+        self.last = sample
+        return sample
 
 
 def _safe_now(clock: Callable[[], float]) -> float | None:

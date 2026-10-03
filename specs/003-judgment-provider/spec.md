@@ -214,9 +214,10 @@ runtime capability. The catalog must continue to require identity, exact model,
 capability authorization, privacy/egress eligibility, health, and governance
 admission; `JUDGMENT` alone must not make a provider eligible.
 
-The proposed implementations are `typesafe_jev`, `kev_local`, and
-`mock_judgment`. All are planned, unadmitted, and unimplemented. The mock is
-test-only and is not a production provider.
+`typesafe_jev` and `kev_local` are planned, unadmitted, and unimplemented.
+`mock_judgment` is implemented as the deterministic J1 test-only execution path.
+It is not a production provider. Real provider execution, `JUDGMENT` admission,
+J2, and deployment are not authorized.
 
 ## D7 compatibility statement
 
