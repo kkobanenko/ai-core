@@ -100,6 +100,8 @@ _SCORE_QUESTION_KEYS = frozenset({"kind", "levels", "minimum", "maximum"})
 _BINARY_ANSWER_KEYS = frozenset({"kind", "probability_true"})
 _CHOICE_ANSWER_KEYS = frozenset({"kind", "selected_choice", "confidence", "probabilities"})
 _SCORE_ANSWER_KEYS = frozenset({"kind", "expected_score", "confidence", "probabilities"})
+_QUESTION_ENTRY_KEYS = frozenset({"name", "question"})
+_ANSWER_ENTRY_KEYS = frozenset({"name", "answer"})
 
 
 class JudgmentErrorCategory(str, Enum):
@@ -499,9 +501,13 @@ def _unit_interval(value: object) -> bool:
     return _finite_number(value) and 0.0 <= float(value) <= 1.0
 
 
-def _distribution_error(pairs: object, declared: tuple[str, ...]) -> str | None:
-    """Ключи совпадают с объявлением. Сумма около 1. Иначе отказ, без нормализации."""
-    if type(pairs) is not tuple:
+def _bounded_name(value: object) -> bool:
+    return type(value) is str and 0 < len(value) <= _MAX_STRING_LENGTH
+
+
+def _distribution_shape_error(pairs: object) -> str | None:
+    """Форма распределения без знания вопроса. Сумму не нормализуем."""
+    if type(pairs) is not tuple or len(pairs) == 0 or len(pairs) > _MAX_DECLARED_OPTIONS:
         return "distribution type"
     keys: list[str] = []
     total = 0.0
@@ -509,40 +515,72 @@ def _distribution_error(pairs: object, declared: tuple[str, ...]) -> str | None:
         if type(item) is not tuple or len(item) != 2:
             return "distribution pair"
         key, probability = item
-        if type(key) is not str:
-            return "distribution key"
-        if not _unit_interval(probability):
+        if not _bounded_name(key) or not _unit_interval(probability):
             return "distribution value"
         keys.append(key)
         total += float(probability)
-    if len(keys) != len(set(keys)) or set(keys) != set(declared):
+    if len(keys) != len(set(keys)):
         return "distribution keys"
     if abs(total - 1.0) > _DISTRIBUTION_SUM_TOLERANCE:
         return "distribution sum"
     return None
 
 
+def _answer_structural_error(answer: object) -> str | None:
+    """Проверки ответа, которым не нужен исходный вопрос."""
+    if isinstance(answer, BinaryAnswer):
+        if not _unit_interval(answer.probability_true):
+            return "binary probability"
+        return None
+    if isinstance(answer, ChoiceAnswer):
+        if not _bounded_name(answer.selected_choice) or not _unit_interval(answer.confidence):
+            return "choice fields"
+        problem = _distribution_shape_error(answer.probabilities)
+        if problem is not None:
+            return problem
+        if answer.selected_choice not in {key for key, _probability in answer.probabilities}:
+            return "selected choice"
+        return None
+    if isinstance(answer, ScoreAnswer):
+        if not _finite_number(answer.expected_score) or not _unit_interval(answer.confidence):
+            return "score fields"
+        return _distribution_shape_error(answer.probabilities)
+    return "answer type"
+
+
+def _answers_collection_error(answers: object) -> str | None:
+    if type(answers) is not tuple or len(answers) == 0 or len(answers) > _MAX_QUESTIONS:
+        return "answers"
+    seen: set[str] = set()
+    for item in answers:
+        if type(item) is not tuple or len(item) != 2:
+            return "answer pair"
+        name, answer = item
+        if not _bounded_name(name) or name in seen:
+            return "answer name"
+        seen.add(name)
+        if _answer_structural_error(answer) is not None:
+            return "answer value"
+    return None
+
+
 def _answer_matches(question: Question, answer: object) -> bool:
+    if _answer_structural_error(answer) is not None:
+        return False
     if isinstance(question, BinaryQuestion):
-        return isinstance(answer, BinaryAnswer) and _unit_interval(answer.probability_true)
+        return isinstance(answer, BinaryAnswer)
     if isinstance(question, ChoiceQuestion):
-        if not isinstance(answer, ChoiceAnswer):
+        if not isinstance(answer, ChoiceAnswer) or answer.selected_choice not in question.choices:
             return False
-        if type(answer.selected_choice) is not str or answer.selected_choice not in question.choices:
-            return False
-        if not _unit_interval(answer.confidence):
-            return False
-        return _distribution_error(answer.probabilities, question.choices) is None
+        keys = [key for key, _probability in answer.probabilities]
+        return set(keys) == set(question.choices)
     if isinstance(question, ScoreQuestion):
         if not isinstance(answer, ScoreAnswer):
             return False
-        if not _finite_number(answer.expected_score):
-            return False
         if answer.expected_score < question.minimum or answer.expected_score > question.maximum:
             return False
-        if not _unit_interval(answer.confidence):
-            return False
-        return _distribution_error(answer.probabilities, question.levels) is None
+        keys = [key for key, _probability in answer.probabilities]
+        return set(keys) == set(question.levels)
     return False
 
 
@@ -634,9 +672,7 @@ def _structural_problem(response: JudgmentResponse) -> str | None:
         return None
     if telemetry.outcome is not JudgmentOutcome.SUCCESS or telemetry.error_category is not None:
         return "telemetry outcome"
-    if type(response.answers) is not tuple:
-        return "answers"
-    return None
+    return _answers_collection_error(response.answers)
 
 
 def _privacy_allows(request: JudgmentRequest) -> bool:
@@ -986,15 +1022,20 @@ def _json_error(value: object) -> JudgmentErrorCategory | None:
 
 
 def _json_questions(value: object) -> tuple[tuple[str, Question], ...]:
-    if type(value) is not dict:
-        raise ValueError("questions must be an object")
+    if type(value) is not list:
+        raise ValueError("questions must be an ordered array")
     if len(value) == 0 or len(value) > _MAX_QUESTIONS:
         raise ValueError("questions count is outside the bound")
     pairs: list[tuple[str, Question]] = []
-    for name in sorted(value):
-        if type(name) is not str:
-            raise ValueError("question name must be a string")
-        pairs.append((name, _json_question(value[name])))
+    seen: set[str] = set()
+    for entry in value:
+        if type(entry) is not dict or set(entry) != _QUESTION_ENTRY_KEYS:
+            raise ValueError("question entry fields are not the closed set")
+        name = _json_str(entry.get("name"), "name")
+        if name in seen:
+            raise ValueError("duplicate question name")
+        seen.add(name)
+        pairs.append((name, _json_question(entry.get("question"))))
     return tuple(pairs)
 
 
@@ -1048,13 +1089,20 @@ def _json_options(value: object, name: str) -> tuple[str, ...]:
 def _json_answers(value: object) -> tuple[tuple[str, Answer], ...] | None:
     if value is None:
         return None
-    if type(value) is not dict:
-        raise ValueError("answers must be an object")
+    if type(value) is not list:
+        raise ValueError("answers must be an ordered array")
+    if len(value) == 0 or len(value) > _MAX_QUESTIONS:
+        raise ValueError("answers count is outside the bound")
     pairs: list[tuple[str, Answer]] = []
-    for name in sorted(value):
-        if type(name) is not str:
-            raise ValueError("answer name must be a string")
-        pairs.append((name, _json_answer(value[name])))
+    seen: set[str] = set()
+    for entry in value:
+        if type(entry) is not dict or set(entry) != _ANSWER_ENTRY_KEYS:
+            raise ValueError("answer entry fields are not the closed set")
+        name = _json_str(entry.get("name"), "name")
+        if name in seen:
+            raise ValueError("duplicate answer name")
+        seen.add(name)
+        pairs.append((name, _json_answer(entry.get("answer"))))
     return tuple(pairs)
 
 
@@ -1097,7 +1145,10 @@ def _json_probability_pairs(value: object) -> tuple[tuple[str, float], ...]:
 
 
 def _request_document(request: JudgmentRequest) -> dict:
-    questions = {name: _question_document(question) for name, question in request.questions}
+    questions = [
+        {"name": name, "question": _question_document(question)}
+        for name, question in request.questions
+    ]
     return {
         "data_class": request.data_class.value,
         "deadline_monotonic": request.deadline_monotonic,
@@ -1137,7 +1188,10 @@ def _question_document(question: Question) -> dict:
 def _response_document(response: JudgmentResponse) -> dict:
     answers = None
     if response.answers is not None:
-        answers = {name: _answer_document(answer) for name, answer in response.answers}
+        answers = [
+            {"name": name, "answer": _answer_document(answer)}
+            for name, answer in response.answers
+        ]
     return {
         "answers": answers,
         "decision_pack_id": response.decision_pack_id,

@@ -105,7 +105,7 @@ J2, provider network execution, or catalog admission.
   - **Changed surfaces**: future `mock_judgment` module and contract/failure
     tests.
   - **Deterministic acceptance**: the mock produces declared choice, score,
-    `Noul`, timeout, rate-limit, unavailable, and invalid-response fixtures
+    Binary, Choice, and Score answers, timeout, rate-limit, unavailable, and invalid-response fixtures
     without credentials or network access; it cannot be selected as a
     production provider.
   - **STOP**: the task requires an SDK, external endpoint, credential, or
@@ -134,7 +134,7 @@ J2, provider network execution, or catalog admission.
   - **Deterministic acceptance**: invalid requests fail with `invalid_request`
     before transport; denied privacy/egress fails closed before transport;
     timeout, rate-limit, unavailable, and malformed mock responses surface
-    only normalized typed errors or validated `noul`/choice variants; consumer
+    only normalized typed errors or a validated answer batch; consumer
     callbacks never receive unvalidated provider output; telemetry stays
     metadata-only. Tests do **not** assert consumer model/effort/context,
     `needs_review`, low-confidence routing, tool calls, or queue state.

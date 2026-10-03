@@ -324,6 +324,78 @@ def test_blocking_mock_hits_deadline() -> None:
     assert time.monotonic() - started < 1.5
 
 
+def _success_shell(request: JudgmentRequest, answers):
+    ok = invoke_judgment(request, clock=_clock(1.0))
+    return JudgmentResponse(
+        provider=request.provider,
+        model=request.model,
+        model_version=request.model_version,
+        decision_pack_id=request.decision_pack_id,
+        decision_pack_version=request.decision_pack_version,
+        telemetry=ok.telemetry,
+        answers=answers,
+    )
+
+
+def test_standalone_answer_structural_validation() -> None:
+    request = _request()
+    binary = _success_shell(request, _binary_answer(1.0))
+    assert response_from_json(response_to_json(binary)) == binary
+    for bad in (2.0, -0.1, float("nan"), float("inf"), True):
+        raw = _success_shell(request, _binary_answer(bad))  # type: ignore[arg-type]
+        with pytest.raises(ValueError):
+            response_to_json(raw)
+        document = json.loads(response_to_json(binary))
+        document["answers"][0]["answer"]["probability_true"] = bad
+        with pytest.raises(ValueError):
+            response_from_json(json.dumps(document))
+    choice_request = _request(questions=(("label", ChoiceQuestion(("no", "yes"))),))
+    choice_ok = invoke_judgment(choice_request, clock=_clock(1.0))
+    assert response_from_json(response_to_json(choice_ok)) == choice_ok
+    bad_choice = ChoiceAnswer("missing", 1.0, (("no", 0.5), ("yes", 0.5)))
+    with pytest.raises(ValueError):
+        response_to_json(_success_shell(choice_request, (("label", bad_choice),)))
+    for confidence, pairs in (
+        (-0.1, (("no", 0.5), ("yes", 0.5))),
+        (1.1, (("no", 0.5), ("yes", 0.5))),
+        (float("nan"), (("no", 0.5), ("yes", 0.5))),
+        (0.5, (("no", -0.1), ("yes", 1.1))),
+        (0.5, (("no", float("nan")), ("yes", 1.0))),
+        (0.5, (("no", 0.2), ("yes", 0.2))),
+        (0.5, (("no", 0.5), ("no", 0.5))),
+    ):
+        raw = _success_shell(choice_request, (("label", ChoiceAnswer("no", confidence, pairs)),))
+        with pytest.raises(ValueError):
+            response_to_json(raw)
+    score_request = _request(questions=(("fit", ScoreQuestion(("high", "low"), 0.0, 1.0)),))
+    score_ok = invoke_judgment(score_request, clock=_clock(1.0))
+    assert response_from_json(response_to_json(score_ok)) == score_ok
+    for expected, confidence, pairs in (
+        (float("inf"), 1.0, (("high", 1.0), ("low", 0.0))),
+        (0.5, 1.5, (("high", 1.0), ("low", 0.0))),
+        (0.5, 1.0, (("high", 0.2), ("low", 0.2))),
+    ):
+        raw = _success_shell(score_request, (("fit", ScoreAnswer(expected, confidence, pairs)),))
+        with pytest.raises(ValueError):
+            response_to_json(raw)
+
+
+def test_nonalphabetic_batch_json_order_round_trip() -> None:
+    questions = (
+        ("z", ScoreQuestion(("high", "low"), 0.0, 1.0)),
+        ("a", BinaryQuestion("same entity")),
+        ("middle", ChoiceQuestion(("no", "yes"))),
+    )
+    request = _request(questions=questions)
+    restored = request_from_json(request_to_json(request))
+    assert restored == request
+    assert [name for name, _question in restored.questions] == ["z", "a", "middle"]
+    response = invoke_judgment(request, clock=_clock(1.0))
+    round_trip = response_from_json(response_to_json(response))
+    assert round_trip == response
+    assert [name for name, _answer in round_trip.answers] == ["z", "a", "middle"]
+
+
 def test_correction_is_documented_without_provider_neutral_noul() -> None:
     root = Path(__file__).resolve().parents[1]
     spec = (root / "specs/003-judgment-provider/spec.md").read_text(encoding="utf-8")
@@ -334,4 +406,16 @@ def test_correction_is_documented_without_provider_neutral_noul() -> None:
     assert "class Noul" not in source
     assert "class NoulReason" not in source
     assert "noul_allowed" not in source
-    assert "NOUL" not in source
+    allowed = ("typesafe", "rejected", "removed", "not an ai-core", "no provider-neutral", "incorrect", "mistaken", "superseded")
+    for relative in (
+        "specs/003-judgment-provider/spec.md",
+        "specs/003-judgment-provider/plan.md",
+        "specs/003-judgment-provider/tasks.md",
+        "docs/coordination/TRANSITION_PLAN.md",
+        "docs/handoffs/2026-10-03-judgment-provider-j1-contract.md",
+        "docs/handoffs/2026-10-03-j1-batch-contract-correction.md",
+    ):
+        for line in (root / relative).read_text(encoding="utf-8").splitlines():
+            if "noul" not in line.lower():
+                continue
+            assert any(token in line.lower() for token in allowed), line
