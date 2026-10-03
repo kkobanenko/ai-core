@@ -1,7 +1,12 @@
 # Implementation Plan: Judgment Provider v0.1
 
-**Status**: PLAN_ONLY. This plan describes a future separately authorized J1
-implementation. This documentation package creates no runtime behavior.
+**Status**: `AUTHORIZE_J1_CONTRACT_ONLY`, scope `contract_only`.
+
+The authorization already recorded at platform-control Remote Truth
+`717cace0d109105c406723de30cd72e4e3ed7dd4`
+(`coordination/initiatives/platform-factory-global-roadmap/evidence/operator-decision-authorize-j1-contract-only.yaml`)
+allows the callable provider-neutral contract. It does not allow J2, real
+provider network execution, credentials, deployment, or catalog admission.
 
 ## Goal
 
@@ -126,9 +131,9 @@ handled later as a fail-neutral protocol for consumers and is not part of J1.
 
 1. D7 canon remains recorded as v0.3.1 plus pc#291 extensions; no unresolved
    architecture decision may be inferred by the implementer.
-2. Before J1 starts, `AUTHORIZE_J1` with scope `contract_only` must be
-   explicitly recorded by the authorized operator/governance process; the
-   current state remains `HOLD_J1`.
+2. `AUTHORIZE_J1_CONTRACT_ONLY` with scope `contract_only` is already recorded
+   at platform-control `717cace0d109105c406723de30cd72e4e3ed7dd4`. Callable
+   contract runtime is authorized. Provider network execution is not.
 3. Before any catalog or runtime change, the implementation must receive
    platform-control review because it changes provider/capability contracts.
 4. Before J1 is accepted, a human reviews the exact head, contract tests,

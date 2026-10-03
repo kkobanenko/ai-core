@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from pathlib import Path
 
 import pytest
 
@@ -19,7 +20,7 @@ from ai_core.judgment_contracts import (
     Score,
     ScoreScale,
     grants_authority,
-    invoke_judgment,
+    invoke_judgment as _invoke_judgment,
     request_from_json,
     request_to_json,
     response_from_json,
@@ -28,6 +29,21 @@ from ai_core.judgment_contracts import (
 )
 from ai_core.privacy import DataClass, OutboundForm
 from ai_core.provider_catalog import NetworkBoundary
+
+LOCAL_PROVIDER = "vm100_local_ollama"
+EXTERNAL_PROVIDER = "mistral_external"
+INTERNAL_PROVIDER = "gpu_ollama"
+
+
+def _known_pack(pack_id: str, version: str) -> bool:
+    """Тестовые метаданные потребителя. Это не каталог ai-core."""
+    return pack_id == "pack-1" and version == "1"
+
+
+def invoke_judgment(request, provider=None, **kwargs):
+    """Тесты знают pack-1/1. Явный resolver, включая None, не подменяется."""
+    kwargs.setdefault("decision_pack_known", _known_pack)
+    return _invoke_judgment(request, provider, **kwargs)
 
 
 class SpyProvider:
@@ -70,7 +86,7 @@ def _request(**overrides: object) -> JudgmentRequest:
         "request_egress_authorized": False,
         "hosted_boundary": False,
         "deadline_monotonic": 200.0,
-        "provider": "fixture-provider",
+        "provider": LOCAL_PROVIDER,
         "model": "fixture-model",
         "model_version": "1.0.0",
         "payload": {"note": "synthetic"},
@@ -80,30 +96,38 @@ def _request(**overrides: object) -> JudgmentRequest:
     return JudgmentRequest(**values)
 
 
-def _telemetry() -> JudgmentTelemetry:
+def _telemetry(**identity: str) -> JudgmentTelemetry:
+    values = {
+        "provider": LOCAL_PROVIDER,
+        "model": "fixture-model",
+        "model_version": "1.0.0",
+        "decision_pack_id": "pack-1",
+        "decision_pack_version": "1",
+    }
+    values.update(identity)
     return JudgmentTelemetry(
         JudgmentOutcome.CHOICE,
         None,
         0,
         0,
-        "fixture-provider",
-        "fixture-model",
-        "1.0.0",
-        "pack-1",
-        "1",
+        values["provider"],
+        values["model"],
+        values["model_version"],
+        values["decision_pack_id"],
+        values["decision_pack_version"],
     )
 
 
 def _choice(value: str = "yes", **identity: str) -> JudgmentResponse:
     base = {
-        "provider": "fixture-provider",
+        "provider": LOCAL_PROVIDER,
         "model": "fixture-model",
         "model_version": "1.0.0",
         "decision_pack_id": "pack-1",
         "decision_pack_version": "1",
     }
     base.update(identity)
-    return JudgmentResponse(telemetry=_telemetry(), choice=Choice(value), **base)
+    return JudgmentResponse(telemetry=_telemetry(**identity), choice=Choice(value), **base)
 
 
 def _invoke(request: JudgmentRequest, result: object, now: float = 100.0) -> tuple[JudgmentResponse, SpyProvider]:
@@ -158,6 +182,7 @@ def test_jc7_secret_hosted_payload_is_denied() -> None:
     request = _request(
         data_class=DataClass.SECRET,
         network_boundary=NetworkBoundary.EXTERNAL,
+        provider=EXTERNAL_PROVIDER,
         request_egress_authorized=True,
         hosted_boundary=True,
         payload={"token": "super-secret-token"},
@@ -171,6 +196,7 @@ def test_jc8_private_client_hosted_is_denied() -> None:
     request = _request(
         data_class=DataClass.PRIVATE_CLIENT_DATA,
         network_boundary=NetworkBoundary.EXTERNAL,
+        provider=EXTERNAL_PROVIDER,
         request_egress_authorized=True,
         hosted_boundary=True,
     )
@@ -183,6 +209,7 @@ def test_jc9_public_without_egress_is_denied() -> None:
     request = _request(
         data_class=DataClass.PUBLIC_NO_PII,
         network_boundary=NetworkBoundary.EXTERNAL,
+        provider=EXTERNAL_PROVIDER,
         request_egress_authorized=False,
         hosted_boundary=True,
     )
@@ -195,10 +222,11 @@ def test_jc10_synthetic_hosted_may_call_provider() -> None:
     request = _request(
         data_class=DataClass.SYNTHETIC,
         network_boundary=NetworkBoundary.EXTERNAL,
+        provider=EXTERNAL_PROVIDER,
         request_egress_authorized=True,
         hosted_boundary=True,
     )
-    response, spy = _invoke(request, _choice())
+    response, spy = _invoke(request, _choice(provider=EXTERNAL_PROVIDER))
     assert response.choice == Choice("yes")
     assert spy.calls == 1
 
@@ -355,6 +383,7 @@ def test_jc30_privacy_before_provider_construction() -> None:
     request = _request(
         data_class=DataClass.SECRET,
         network_boundary=NetworkBoundary.EXTERNAL,
+        provider=EXTERNAL_PROVIDER,
         request_egress_authorized=True,
         hosted_boundary=True,
     )
@@ -395,7 +424,7 @@ def test_jc34_choice_does_not_grant_completion() -> None:
 
 def _bare(**variants: object) -> JudgmentResponse:
     return JudgmentResponse(
-        provider="fixture-provider",
+        provider=LOCAL_PROVIDER,
         model="fixture-model",
         model_version="1.0.0",
         decision_pack_id="pack-1",
@@ -591,7 +620,8 @@ def test_b4_positive_pin_grammar() -> None:
 
 def test_c1_external_boundary_does_not_trust_hosted_flag() -> None:
     def run(data_class: DataClass, boundary: NetworkBoundary, egress: bool, hosted: bool):
-        fixture = SpyProvider(_choice())
+        provider = EXTERNAL_PROVIDER if boundary is NetworkBoundary.EXTERNAL else LOCAL_PROVIDER
+        fixture = SpyProvider(_choice(provider=provider))
         response = invoke_judgment(
             _request(
                 data_class=data_class,
@@ -599,6 +629,7 @@ def test_c1_external_boundary_does_not_trust_hosted_flag() -> None:
                 request_egress_authorized=egress,
                 hosted_boundary=hosted,
                 outbound_form=OutboundForm.RAW,
+                provider=provider,
             ),
             provider_factory=fixture.factory,
             clock=_clock(10.0),
@@ -736,17 +767,25 @@ def test_d1_unknown_network_boundary_fails_closed() -> None:
 def test_d1_privacy_matrix_uses_real_enums() -> None:
     external_denied = {DataClass.PUBLIC_POSSIBLE_PII, DataClass.PRIVATE_CLIENT_DATA, DataClass.SECRET}
     hosted_ok = {DataClass.SYNTHETIC, DataClass.PUBLIC_NO_PII}
+    aligned = {
+        NetworkBoundary.LOCAL_SAME_HOST: LOCAL_PROVIDER,
+        NetworkBoundary.INTERNAL_TRUSTED: INTERNAL_PROVIDER,
+        NetworkBoundary.EXTERNAL: EXTERNAL_PROVIDER,
+        NetworkBoundary.UNKNOWN_BOUNDARY: LOCAL_PROVIDER,
+    }
     for boundary in NetworkBoundary:
         for data_class in DataClass:
             for egress in (False, True):
                 for hosted in (False, True):
-                    fixture = SpyProvider(_choice())
+                    provider = aligned[boundary]
+                    fixture = SpyProvider(_choice(provider=provider))
                     response = invoke_judgment(
                         _request(
                             data_class=data_class,
                             network_boundary=boundary,
                             request_egress_authorized=egress,
                             hosted_boundary=hosted,
+                            provider=provider,
                         ),
                         provider_factory=fixture.factory,
                         clock=_clock(1.0),
@@ -892,3 +931,199 @@ def test_e3_invalid_clock_fails_closed() -> None:
         assert fixture.calls == 0
     zero = invoke_judgment(_request(deadline_monotonic=1.0), SpyProvider(_choice()), clock=lambda: 0.0)
     assert zero.choice == Choice("yes")
+
+
+def test_f1_trusted_provider_boundary_is_authoritative() -> None:
+    mismatch = SpyProvider(_choice())
+    response = invoke_judgment(
+        _request(
+            provider=EXTERNAL_PROVIDER,
+            network_boundary=NetworkBoundary.LOCAL_SAME_HOST,
+            data_class=DataClass.PRIVATE_CLIENT_DATA,
+            request_egress_authorized=False,
+        ),
+        provider_factory=mismatch.factory,
+        clock=_clock(1.0),
+    )
+    assert response.error is JudgmentErrorCategory.INVALID_REQUEST
+    assert mismatch.built == 0
+    assert mismatch.calls == 0
+    private = SpyProvider(_choice(provider=EXTERNAL_PROVIDER))
+    denied = invoke_judgment(
+        _request(
+            provider=EXTERNAL_PROVIDER,
+            network_boundary=NetworkBoundary.EXTERNAL,
+            data_class=DataClass.PRIVATE_CLIENT_DATA,
+            request_egress_authorized=True,
+            hosted_boundary=True,
+        ),
+        provider_factory=private.factory,
+        clock=_clock(1.0),
+    )
+    assert denied.error is JudgmentErrorCategory.PRIVACY_EGRESS_DENIED
+    assert private.built == 0
+    assert private.calls == 0
+    allowed = SpyProvider(_choice(provider=EXTERNAL_PROVIDER))
+    opened = invoke_judgment(
+        _request(
+            provider=EXTERNAL_PROVIDER,
+            network_boundary=NetworkBoundary.EXTERNAL,
+            data_class=DataClass.SYNTHETIC,
+            request_egress_authorized=True,
+            hosted_boundary=True,
+        ),
+        provider_factory=allowed.factory,
+        clock=_clock(1.0),
+    )
+    assert opened.choice == Choice("yes")
+    assert allowed.calls == 1
+    local_as_external = SpyProvider(_choice())
+    crossed = invoke_judgment(
+        _request(provider=LOCAL_PROVIDER, network_boundary=NetworkBoundary.EXTERNAL, hosted_boundary=True),
+        provider_factory=local_as_external.factory,
+        clock=_clock(1.0),
+    )
+    assert crossed.error is JudgmentErrorCategory.INVALID_REQUEST
+    assert local_as_external.built == 0
+    consistent = invoke_judgment(
+        _request(provider=LOCAL_PROVIDER, network_boundary=NetworkBoundary.LOCAL_SAME_HOST),
+        SpyProvider(_choice()),
+        clock=_clock(1.0),
+    )
+    assert consistent.choice == Choice("yes")
+    unknown = SpyProvider(_choice())
+    missing = invoke_judgment(
+        _request(provider="not-a-governed-provider"),
+        provider_factory=unknown.factory,
+        clock=_clock(1.0),
+    )
+    assert missing.error is JudgmentErrorCategory.INVALID_REQUEST
+    assert unknown.built == 0
+    assert unknown.calls == 0
+
+
+def test_f2_authorization_docs_match_remote_truth() -> None:
+    root = Path(__file__).resolve().parents[1]
+    spec = (root / "specs/003-judgment-provider/spec.md").read_text(encoding="utf-8")
+    tasks = (root / "specs/003-judgment-provider/tasks.md").read_text(encoding="utf-8")
+    plan = (root / "specs/003-judgment-provider/plan.md").read_text(encoding="utf-8")
+    combined = spec + tasks + plan
+    assert "AUTHORIZE_J1_CONTRACT_ONLY" in combined
+    assert "717cace0d109105c406723de30cd72e4e3ed7dd4" in combined
+    assert "operator-decision-authorize-j1-contract-only.yaml" in combined
+    assert "contract_only" in combined
+    assert "current state `HOLD_J1`" not in combined
+    assert "current state remains `HOLD_J1`" not in combined
+    assert "DOCS_ONLY_DESIGN" not in tasks
+    assert (root / "src/ai_core/judgment_contracts.py").is_file()
+
+
+def test_f3_unknown_decision_pack_skips_provider() -> None:
+    def known(pack_id: str, version: str) -> bool:
+        return pack_id == "pack-1" and version == "1"
+
+    ok, spy = _invoke(_request(), _choice())
+    assert ok.choice == Choice("yes")
+    assert spy.calls == 1
+    for overrides in (
+        {"decision_pack_version": "999"},
+        {"decision_pack_id": "other-pack"},
+        {"decision_pack_id": "pack-typo"},
+    ):
+        fixture = SpyProvider(_choice())
+        response = invoke_judgment(
+            _request(**overrides),
+            provider_factory=fixture.factory,
+            clock=_clock(1.0),
+            decision_pack_known=known,
+        )
+        assert response.error is JudgmentErrorCategory.INVALID_REQUEST
+        assert fixture.built == 0
+        assert fixture.calls == 0
+    broken = SpyProvider(_choice())
+
+    def explode(pack_id: str, version: str) -> bool:
+        raise RuntimeError("resolver down")
+
+    failed = invoke_judgment(
+        _request(),
+        provider_factory=broken.factory,
+        clock=_clock(1.0),
+        decision_pack_known=explode,
+    )
+    assert failed.error is JudgmentErrorCategory.INVALID_REQUEST
+    assert broken.built == 0
+    closed = SpyProvider(_choice())
+    absent = invoke_judgment(
+        _request(),
+        provider_factory=closed.factory,
+        clock=_clock(1.0),
+        decision_pack_known=None,
+    )
+    assert absent.error is JudgmentErrorCategory.INVALID_REQUEST
+    assert closed.built == 0
+
+
+def test_f4_hostile_identity_equality_does_not_escape() -> None:
+    class Hostile:
+        def __eq__(self, other: object) -> bool:
+            raise RuntimeError("hostile equality")
+
+    fields = (
+        "provider",
+        "model",
+        "model_version",
+        "decision_pack_id",
+        "decision_pack_version",
+    )
+    base = _choice()
+    for field in fields:
+        values = {
+            "provider": base.provider,
+            "model": base.model,
+            "model_version": base.model_version,
+            "decision_pack_id": base.decision_pack_id,
+            "decision_pack_version": base.decision_pack_version,
+        }
+        values[field] = Hostile()
+        raw = JudgmentResponse(
+            provider=values["provider"],
+            model=values["model"],
+            model_version=values["model_version"],
+            decision_pack_id=values["decision_pack_id"],
+            decision_pack_version=values["decision_pack_version"],
+            telemetry=base.telemetry,
+            choice=Choice("yes"),
+        )
+        response, spy = _invoke(_request(), raw)
+        assert response.error is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+        assert spy.calls == 1
+        with pytest.raises(ValueError):
+            response_to_json(raw)
+    for field in fields:
+        raw = _choice()
+        telemetry = JudgmentTelemetry(
+            JudgmentOutcome.CHOICE,
+            None,
+            0,
+            0,
+            raw.provider,
+            raw.model,
+            raw.model_version,
+            raw.decision_pack_id,
+            raw.decision_pack_version,
+        )
+        object.__setattr__(telemetry, field, Hostile())
+        hostile = JudgmentResponse(
+            provider=raw.provider,
+            model=raw.model,
+            model_version=raw.model_version,
+            decision_pack_id=raw.decision_pack_id,
+            decision_pack_version=raw.decision_pack_version,
+            telemetry=telemetry,
+            choice=Choice("yes"),
+        )
+        response, _spy = _invoke(_request(), hostile)
+        assert response.error is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+        with pytest.raises(ValueError):
+            response_to_json(hostile)

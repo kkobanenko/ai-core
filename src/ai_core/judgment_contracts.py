@@ -15,7 +15,7 @@ from enum import Enum
 from typing import Callable, Protocol
 
 from ai_core.privacy import DataClass, OutboundForm, is_egress_eligible
-from ai_core.provider_catalog import NetworkBoundary
+from ai_core.provider_catalog import NetworkBoundary, UnknownProviderIdentityError, get_provider_identity
 
 # Результат не может выдать эти права. Поля с такими именами запрещены.
 FORBIDDEN_AUTHORITY = (
@@ -213,11 +213,14 @@ def invoke_judgment(
     *,
     provider_factory: Callable[[], JudgmentProvider] | None = None,
     clock: Callable[[], float] = time.monotonic,
+    decision_pack_known: Callable[[str, str], bool] | None = None,
 ) -> JudgmentResponse:
-    """Проверить запрос, затем границу, затем срок, затем провайдера.
+    """Проверить запрос, каталог, пакет, приватность, срок, затем провайдера.
 
     Повтор и запасной провайдер в J1 не выполняются.
     Общий монотонный срок остаётся одним на будущий повтор.
+    decision_pack_known отвечает только «пара id/version известна».
+    Без этого ответа пакет не считается известным.
     """
     started = _safe_now(clock)
     if not isinstance(request, JudgmentRequest):
@@ -228,6 +231,10 @@ def invoke_judgment(
         return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
     if invalid is not None:
         return _unvalidated_error(invalid, _safe_latency(started, clock))
+    if _provider_boundary_error(request) is not None:
+        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
+    if not _decision_pack_known(request, decision_pack_known):
+        return _unvalidated_error(JudgmentErrorCategory.INVALID_REQUEST, _safe_latency(started, clock))
     if not _privacy_allows(request):
         return _error_response(request, JudgmentErrorCategory.PRIVACY_EGRESS_DENIED, _safe_latency(started, clock))
     if not _deadline_open(request, clock):
@@ -264,7 +271,11 @@ def request_to_json(request: JudgmentRequest) -> str:
 
 
 def request_from_json(text: str) -> JudgmentRequest:
-    """Собрать запрос из JSON. Неверный тип поля не приводится к строке."""
+    """Собрать локально валидный запрос из JSON.
+
+    Членство decision-pack в доверенных метаданных потребителя здесь не доказывается.
+    Его проверяет invoke_judgment через decision_pack_known.
+    """
     loaded = json.loads(text)
     if not isinstance(loaded, dict):
         raise ValueError("request JSON must be an object")
@@ -373,13 +384,13 @@ def _structural_problem(response: JudgmentResponse) -> str | None:
     """Инварианты ответа без знания запроса."""
     if not isinstance(response, JudgmentResponse):
         return "response type"
-    if not all(_exact_pin(item) for item in (
+    if not _identity_text_ok(
         response.provider,
         response.model,
         response.model_version,
         response.decision_pack_id,
         response.decision_pack_version,
-    )):
+    ):
         return "identity"
     if response.choice is not None and not isinstance(response.choice, Choice):
         return "choice type"
@@ -412,6 +423,14 @@ def _structural_problem(response: JudgmentResponse) -> str | None:
         return "telemetry outcome type"
     if telemetry.error_category is not None and not isinstance(telemetry.error_category, JudgmentErrorCategory):
         return "telemetry error type"
+    if not _identity_text_ok(
+        telemetry.provider,
+        telemetry.model,
+        telemetry.model_version,
+        telemetry.decision_pack_id,
+        telemetry.decision_pack_version,
+    ):
+        return "telemetry identity"
     if not _nonnegative_int(telemetry.retry_count) or not _nonnegative_int(telemetry.latency_ms):
         return "telemetry range"
     if (
@@ -629,19 +648,60 @@ def _exact_pin(value: object) -> bool:
     return all(part.lower() not in _RESERVED_PIN_PARTS for part in parts)
 
 
+def _governed_identity(request: JudgmentRequest):
+    """Идентичность из каталога. Поле запроса каталог не заменяет."""
+    if not isinstance(request.provider, str):
+        return None
+    try:
+        return get_provider_identity(request.provider)
+    except UnknownProviderIdentityError:
+        return None
+
+
+def _provider_boundary_error(request: JudgmentRequest) -> JudgmentErrorCategory | None:
+    """Чужая или несовпавшая граница — invalid_request, не локальный допуск."""
+    identity = _governed_identity(request)
+    if identity is None or request.network_boundary is not identity.network_boundary:
+        return JudgmentErrorCategory.INVALID_REQUEST
+    return None
+
+
+def _decision_pack_known(
+    request: JudgmentRequest,
+    resolver: Callable[[str, str], bool] | None,
+) -> bool:
+    """Нет резолвера, ошибка резолвера или не-True — пакет неизвестен."""
+    if not callable(resolver):
+        return False
+    try:
+        known = resolver(request.decision_pack_id, request.decision_pack_version)
+    except Exception:
+        return False
+    return known is True
+
+
+def _identity_text_ok(*values: object) -> bool:
+    """Строка и точный литерал. Сравнение с враждебным __eq__ сюда не доходит."""
+    return all(_exact_pin(item) for item in values)
+
+
 def _privacy_allows(request: JudgmentRequest) -> bool:
-    """Неизвестная граница не даёт права. Флаг hosted_boundary их не расширяет."""
-    if request.network_boundary is NetworkBoundary.UNKNOWN_BOUNDARY:
+    """Граница берётся из каталога. Флаг hosted_boundary её не расширяет."""
+    identity = _governed_identity(request)
+    if identity is None:
+        return False
+    boundary = identity.network_boundary
+    if boundary is NetworkBoundary.UNKNOWN_BOUNDARY:
         return False
     eligible = is_egress_eligible(
         data_class=request.data_class,
         outbound_form=request.outbound_form,
-        network_boundary=request.network_boundary,
+        network_boundary=boundary,
         request_egress_authorized=request.request_egress_authorized,
     )
     if eligible is not True:
         return False
-    if request.network_boundary is NetworkBoundary.EXTERNAL:
+    if boundary is NetworkBoundary.EXTERNAL:
         if request.request_egress_authorized is not True:
             return False
         return request.data_class in HOSTED_DATA_CLASSES
@@ -662,6 +722,11 @@ def _deadline_open(request: JudgmentRequest, clock: Callable[[], float]) -> bool
 def _checked_provider_result(request: JudgmentRequest, raw: object, latency_ms: int) -> JudgmentResponse:
     if not isinstance(raw, JudgmentResponse):
         return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
+    # Идентичность раньше вариантов и раньше любого равенства.
+    if not _response_identity_ok(raw):
+        return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
+    if not _identity_matches(request, raw):
+        return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
     # Сначала тип. Потом поля. Иначе битый choice даёт AttributeError наружу.
     if raw.choice is not None and not isinstance(raw.choice, Choice):
         return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
@@ -673,8 +738,6 @@ def _checked_provider_result(request: JudgmentRequest, raw: object, latency_ms: 
         return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
     variants = (raw.choice is not None, raw.noul is not None, raw.error is not None)
     if sum(1 for item in variants if item) != 1:
-        return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
-    if not _identity_matches(request, raw):
         return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
     if raw.error is not None:
         if not isinstance(raw.error, JudgmentErrorCategory):
@@ -713,13 +776,41 @@ def _score_error(request: JudgmentRequest, score: Score | None) -> JudgmentError
     return None
 
 
+def _response_identity_ok(raw: JudgmentResponse) -> bool:
+    """Тип и грамматика до равенства. И у ответа, и у телеметрии."""
+    if not _identity_text_ok(
+        raw.provider,
+        raw.model,
+        raw.model_version,
+        raw.decision_pack_id,
+        raw.decision_pack_version,
+    ):
+        return False
+    telemetry = raw.telemetry
+    if not isinstance(telemetry, JudgmentTelemetry):
+        return False
+    return _identity_text_ok(
+        telemetry.provider,
+        telemetry.model,
+        telemetry.model_version,
+        telemetry.decision_pack_id,
+        telemetry.decision_pack_version,
+    )
+
+
 def _identity_matches(request: JudgmentRequest, raw: JudgmentResponse) -> bool:
+    # К этому месту обе стороны уже строки. Враждебный __eq__ не вызывается.
     return (
         raw.provider == request.provider
         and raw.model == request.model
         and raw.model_version == request.model_version
         and raw.decision_pack_id == request.decision_pack_id
         and raw.decision_pack_version == request.decision_pack_version
+        and raw.telemetry.provider == raw.provider
+        and raw.telemetry.model == raw.model
+        and raw.telemetry.model_version == raw.model_version
+        and raw.telemetry.decision_pack_id == raw.decision_pack_id
+        and raw.telemetry.decision_pack_version == raw.decision_pack_version
     )
 
 

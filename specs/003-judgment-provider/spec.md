@@ -1,8 +1,19 @@
 # Feature Specification: Judgment Provider v0.1
 
-**Status**: PLAN_ONLY — documentation defines a future contract; it does not
-authorize runtime, provider admission, deployment, credentials, network calls,
-consumer migration, or automatic actions.
+**Status**: `AUTHORIZE_J1_CONTRACT_ONLY`, scope `contract_only`.
+
+Recorded authorization, not a new one:
+`kkobanenko/platform-control` Remote Truth
+`717cace0d109105c406723de30cd72e4e3ed7dd4`, evidence
+`coordination/initiatives/platform-factory-global-roadmap/evidence/operator-decision-authorize-j1-contract-only.yaml`,
+task `PC-SEMANTIC-JUDGMENT-J1-AUTH-01`.
+
+That decision authorizes the callable provider-neutral contract: interface,
+`Choice`, `Score`, `Noul`, schemas, validation, deadline, normalized errors,
+privacy/egress boundary, version pins, metadata-only telemetry, and contract
+tests. It does not authorize J2, real Jev calls, credentials, provider network
+execution, deployment, consumer migration, runtime catalog promotion,
+production, live execution, or authoritative decisions.
 
 ## Problem statement
 
@@ -18,9 +29,10 @@ attempt.
 
 ## Non-goals
 
-- This package does not add runtime code, a `JUDGMENT` enum value, catalog
-  entries, provider identities, aliases, SDKs, credentials, endpoints, or
-  network integration.
+- This authorization does not add a `JUDGMENT` enum value, catalog entries,
+  provider identities, aliases, SDKs, credentials, endpoints, or network
+  integration. The callable contract is authorized. Real provider execution
+  is not.
 - A `JudgmentProvider` is not a `TextProvider`, prompt-to-JSON convention, or
   a mode of structured text generation.
 - It does not admit `typesafe_jev`, `kev_local`, or `mock_judgment` as a live
@@ -236,8 +248,9 @@ package.
 
 ## Acceptance boundary
 
-### J1 acceptance criteria for a separately authorized implementation PR
-(`AUTHORIZE_J1`, scope `contract_only`; current state `HOLD_J1`)
+### J1 acceptance criteria under the recorded contract-only authorization
+(`AUTHORIZE_J1_CONTRACT_ONLY`, scope `contract_only`; evidence SHA
+`717cace0d109105c406723de30cd72e4e3ed7dd4`)
 
 - A typed `JudgmentProvider`, `Choice`, `Score`, and `Noul` contract validates
   requests and responses without treating text/JSON generation as the result.
