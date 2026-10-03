@@ -166,7 +166,13 @@ def invoke_judgment(
     except Exception:
         # Текст исключения наружу не отдаём: в нём может быть нагрузка.
         return _error_response(request, JudgmentErrorCategory.INTERNAL_ERROR, _latency(started, clock))
-    return _checked_provider_result(request, raw, _latency(started, clock))
+    # Тот же монотонный срок. Поздний ответ провайдера не становится успехом.
+    if not _deadline_open(request, clock):
+        return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, _latency(started, clock))
+    try:
+        return _checked_provider_result(request, raw, _latency(started, clock))
+    except (AttributeError, TypeError):
+        return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, _latency(started, clock))
 
 
 def request_to_json(request: JudgmentRequest) -> str:
@@ -175,36 +181,31 @@ def request_to_json(request: JudgmentRequest) -> str:
 
 
 def request_from_json(text: str) -> JudgmentRequest:
-    """Собрать запрос из JSON. Неизвестный ключ отвергается."""
+    """Собрать запрос из JSON. Неверный тип поля не приводится к строке."""
     loaded = json.loads(text)
     if not isinstance(loaded, dict):
         raise ValueError("request JSON must be an object")
-    scale = loaded.get("score_scale")
-    parsed_scale = None
-    if scale is not None:
-        parsed_scale = ScoreScale(
-            score_id=str(scale["score_id"]),
-            minimum=float(scale["minimum"]),
-            maximum=float(scale["maximum"]),
-        )
+    choices = loaded.get("allowed_choices")
+    if not isinstance(choices, list) or any(not isinstance(item, str) for item in choices):
+        raise ValueError("allowed_choices must be a list of strings")
     return JudgmentRequest(
-        request_id=str(loaded["request_id"]),
-        decision_pack_id=str(loaded["decision_pack_id"]),
-        decision_pack_version=str(loaded["decision_pack_version"]),
-        criterion_id=str(loaded["criterion_id"]),
-        allowed_choices=tuple(str(item) for item in loaded["allowed_choices"]),
-        noul_allowed=loaded["noul_allowed"] is True,
-        data_class=DataClass(str(loaded["data_class"])),
-        outbound_form=OutboundForm(str(loaded["outbound_form"])),
-        network_boundary=NetworkBoundary(str(loaded["network_boundary"])),
-        request_egress_authorized=loaded["request_egress_authorized"] is True,
-        hosted_boundary=loaded["hosted_boundary"] is True,
-        deadline_monotonic=float(loaded["deadline_monotonic"]),
-        provider=str(loaded["provider"]),
-        model=str(loaded["model"]),
-        model_version=str(loaded["model_version"]),
+        request_id=_json_str(loaded.get("request_id"), "request_id"),
+        decision_pack_id=_json_str(loaded.get("decision_pack_id"), "decision_pack_id"),
+        decision_pack_version=_json_str(loaded.get("decision_pack_version"), "decision_pack_version"),
+        criterion_id=_json_str(loaded.get("criterion_id"), "criterion_id"),
+        allowed_choices=tuple(choices),
+        noul_allowed=_json_bool(loaded.get("noul_allowed"), "noul_allowed"),
+        data_class=DataClass(_json_str(loaded.get("data_class"), "data_class")),
+        outbound_form=OutboundForm(_json_str(loaded.get("outbound_form"), "outbound_form")),
+        network_boundary=NetworkBoundary(_json_str(loaded.get("network_boundary"), "network_boundary")),
+        request_egress_authorized=_json_bool(loaded.get("request_egress_authorized"), "request_egress_authorized"),
+        hosted_boundary=_json_bool(loaded.get("hosted_boundary"), "hosted_boundary"),
+        deadline_monotonic=_json_number(loaded.get("deadline_monotonic"), "deadline_monotonic"),
+        provider=_json_str(loaded.get("provider"), "provider"),
+        model=_json_str(loaded.get("model"), "model"),
+        model_version=_json_str(loaded.get("model_version"), "model_version"),
         payload=loaded.get("payload"),
-        score_scale=parsed_scale,
+        score_scale=_json_scale(loaded.get("score_scale")),
     )
 
 
@@ -214,28 +215,35 @@ def response_to_json(response: JudgmentResponse) -> str:
 
 
 def response_from_json(text: str) -> JudgmentResponse:
-    """Собрать ответ из JSON."""
+    """Собрать ответ из JSON. Неверный тип поля не приводится к строке."""
     loaded = json.loads(text)
     if not isinstance(loaded, dict):
         raise ValueError("response JSON must be an object")
-    telemetry = JudgmentTelemetry(**loaded["telemetry"])
-    choice = None if loaded.get("choice") is None else Choice(str(loaded["choice"]))
-    score = None
-    if loaded.get("score") is not None:
-        score = Score(score_id=str(loaded["score"]["score_id"]), value=float(loaded["score"]["value"]))
-    noul = None if loaded.get("noul") is None else Noul(str(loaded["noul"]))
-    error = None if loaded.get("error") is None else JudgmentErrorCategory(str(loaded["error"]))
+    telemetry_raw = loaded.get("telemetry")
+    if not isinstance(telemetry_raw, dict):
+        raise ValueError("telemetry must be an object")
+    telemetry = JudgmentTelemetry(
+        outcome=_json_str(telemetry_raw.get("outcome"), "outcome"),
+        error_category=_json_text(telemetry_raw.get("error_category"), "error_category"),
+        latency_ms=_json_int(telemetry_raw.get("latency_ms"), "latency_ms"),
+        retry_count=_json_int(telemetry_raw.get("retry_count"), "retry_count"),
+        provider=_json_str(telemetry_raw.get("provider"), "provider"),
+        model=_json_str(telemetry_raw.get("model"), "model"),
+        model_version=_json_str(telemetry_raw.get("model_version"), "model_version"),
+        decision_pack_id=_json_str(telemetry_raw.get("decision_pack_id"), "decision_pack_id"),
+        decision_pack_version=_json_str(telemetry_raw.get("decision_pack_version"), "decision_pack_version"),
+    )
     return JudgmentResponse(
-        provider=str(loaded["provider"]),
-        model=str(loaded["model"]),
-        model_version=str(loaded["model_version"]),
-        decision_pack_id=str(loaded["decision_pack_id"]),
-        decision_pack_version=str(loaded["decision_pack_version"]),
+        provider=_json_str(loaded.get("provider"), "provider"),
+        model=_json_str(loaded.get("model"), "model"),
+        model_version=_json_str(loaded.get("model_version"), "model_version"),
+        decision_pack_id=_json_str(loaded.get("decision_pack_id"), "decision_pack_id"),
+        decision_pack_version=_json_str(loaded.get("decision_pack_version"), "decision_pack_version"),
         telemetry=telemetry,
-        choice=choice,
-        score=score,
-        noul=noul,
-        error=error,
+        choice=_json_choice(loaded.get("choice")),
+        score=_json_score(loaded.get("score")),
+        noul=_json_noul(loaded.get("noul")),
+        error=_json_error(loaded.get("error")),
     )
 
 
@@ -243,6 +251,74 @@ def grants_authority(response: JudgmentResponse) -> bool:
     """Контракт не выдаёт права. Истина здесь означает нарушение инварианта."""
     document = _response_document(response)
     return any(name in document for name in FORBIDDEN_AUTHORITY)
+
+
+def _json_str(value: object, name: str) -> str:
+    if not isinstance(value, str) or value.strip() == "":
+        raise ValueError(f"{name} must be a non-empty string")
+    return value
+
+
+def _json_text(value: object, name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a string")
+    return value
+
+
+def _json_bool(value: object, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a boolean")
+    return value
+
+
+def _json_number(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        raise ValueError(f"{name} must be a finite number")
+    return float(value)
+
+
+def _json_int(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer")
+    return value
+
+
+def _json_scale(value: object) -> ScoreScale | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("score_scale must be an object")
+    return ScoreScale(
+        score_id=_json_str(value.get("score_id"), "score_id"),
+        minimum=_json_number(value.get("minimum"), "minimum"),
+        maximum=_json_number(value.get("maximum"), "maximum"),
+    )
+
+
+def _json_choice(value: object) -> Choice | None:
+    if value is None:
+        return None
+    return Choice(_json_str(value, "choice"))
+
+
+def _json_score(value: object) -> Score | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("score must be an object")
+    return Score(score_id=_json_str(value.get("score_id"), "score_id"), value=_json_number(value.get("value"), "value"))
+
+
+def _json_noul(value: object) -> Noul | None:
+    if value is None:
+        return None
+    return Noul(_json_str(value, "noul"))
+
+
+def _json_error(value: object) -> JudgmentErrorCategory | None:
+    if value is None:
+        return None
+    return JudgmentErrorCategory(_json_str(value, "error"))
 
 
 def _request_error(request: JudgmentRequest) -> JudgmentErrorCategory | None:
@@ -291,11 +367,17 @@ def _scale_ok(scale: ScoreScale) -> bool:
 
 
 def _exact_pin(value: str) -> bool:
-    """Точный идентификатор. latest и суффикс -latest запрещены."""
-    text = value.strip().lower()
-    if text == "" or text == "latest":
+    """Точный литерал. Селекторы и latest не являются версией."""
+    text = value.strip()
+    lowered = text.lower()
+    if lowered == "" or lowered == "latest":
         return False
-    if text.endswith("-latest") or text.endswith("_latest"):
+    if lowered.endswith("-latest") or lowered.endswith("_latest"):
+        return False
+    # *, диапазоны и шаблоны могут выбрать другую версию позже.
+    if any(character in text for character in "*><=^~"):
+        return False
+    if any(part.lower() == "x" for part in text.split(".")):
         return False
     return True
 
@@ -326,6 +408,15 @@ def _deadline_open(request: JudgmentRequest, clock: Callable[[], float]) -> bool
 def _checked_provider_result(request: JudgmentRequest, raw: object, latency_ms: int) -> JudgmentResponse:
     if not isinstance(raw, JudgmentResponse):
         return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
+    # Сначала тип. Потом поля. Иначе битый choice даёт AttributeError наружу.
+    if raw.choice is not None and not isinstance(raw.choice, Choice):
+        return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
+    if raw.score is not None and not isinstance(raw.score, Score):
+        return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
+    if raw.noul is not None and not isinstance(raw.noul, Noul):
+        return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
+    if raw.error is not None and not isinstance(raw.error, JudgmentErrorCategory):
+        return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
     variants = (raw.choice is not None, raw.noul is not None, raw.error is not None)
     if sum(1 for item in variants if item) != 1:
         return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
@@ -340,11 +431,11 @@ def _checked_provider_result(request: JudgmentRequest, raw: object, latency_ms: 
     if raw.noul is not None:
         if request.noul_allowed is not True:
             return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
-        if raw.noul.reason_code.strip() == "" or raw.choice is not None or raw.score is not None:
+        if not isinstance(raw.noul.reason_code, str) or raw.noul.reason_code.strip() == "" or raw.choice is not None or raw.score is not None:
             return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
         return _success_response(request, None, None, raw.noul, latency_ms)
     choice = raw.choice
-    if choice is None or choice.value not in request.allowed_choices:
+    if choice is None or not isinstance(choice.value, str) or choice.value not in request.allowed_choices:
         return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
     score_error = _score_error(request, raw.score)
     if score_error is not None:
@@ -357,9 +448,11 @@ def _score_error(request: JudgmentRequest, score: Score | None) -> JudgmentError
         if score is not None:
             return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
         return None
-    if score is None or score.score_id != request.score_scale.score_id:
+    if score is None or not isinstance(score, Score) or not isinstance(score.score_id, str):
         return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
-    if not math.isfinite(score.value):
+    if score.score_id != request.score_scale.score_id:
+        return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+    if isinstance(score.value, bool) or not isinstance(score.value, (int, float)) or not math.isfinite(score.value):
         return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
     if score.value < request.score_scale.minimum or score.value > request.score_scale.maximum:
         return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE

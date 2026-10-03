@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import math
+
+import pytest
 
 from ai_core.judgment_contracts import (
     Choice,
@@ -399,3 +402,70 @@ def _scored(score: Score) -> JudgmentResponse:
 def test_retry_count_stays_zero() -> None:
     response, _spy = _invoke(_request(), _choice())
     assert response.telemetry.retry_count == 0
+
+
+def test_r1_malformed_variants_do_not_escape() -> None:
+    samples = (
+        None,
+        "text",
+        {},
+        _bare(choice="yes"),
+        _bare(choice=Choice("yes"), score="0.5"),
+        _bare(noul="unknown"),
+        _bare(error="provider_unavailable"),
+    )
+    for sample in samples:
+        response, _spy = _invoke(_request(), sample)
+        assert response.error is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+        assert response.choice is None
+        assert response.noul is None
+
+
+def test_r2_late_choice_is_deadline_exhausted() -> None:
+    class Clock:
+        def __init__(self) -> None:
+            self.reads = 0
+
+        def __call__(self) -> float:
+            self.reads += 1
+            # Два чтения до вызова провайдера остаются внутри срока.
+            if self.reads <= 2:
+                return 10.0
+            return 500.0
+
+    response = invoke_judgment(_request(deadline_monotonic=100.0), SpyProvider(_choice()), clock=Clock())
+    assert response.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
+    assert response.choice is None
+    assert "yes" not in response_to_json(response)
+
+
+def test_r2_on_time_choice_stays_valid() -> None:
+    response, _spy = _invoke(_request(deadline_monotonic=200.0), _choice(), now=100.0)
+    assert response.choice == Choice("yes")
+    assert response.error is None
+
+
+def test_r3_selector_pins_are_invalid() -> None:
+    for pin in ("*", "jev-*", ">=1", "^1.2", "~1.2", "1.x", "latest"):
+        response, spy = _invoke(_request(model_version=pin), _choice())
+        assert response.error is JudgmentErrorCategory.INVALID_REQUEST
+        assert spy.built == 0
+
+
+def test_r4_malformed_json_types_are_not_coerced() -> None:
+    document = json.loads(request_to_json(_request()))
+    document["request_id"] = None
+    with pytest.raises(ValueError):
+        request_from_json(json.dumps(document))
+    document = json.loads(request_to_json(_request()))
+    document["allowed_choices"] = [1]
+    with pytest.raises(ValueError):
+        request_from_json(json.dumps(document))
+    document = json.loads(request_to_json(_request()))
+    document["deadline_monotonic"] = "200"
+    with pytest.raises(ValueError):
+        request_from_json(json.dumps(document))
+    answer = json.loads(response_to_json(_invoke(_request(), _choice())[0]))
+    answer["choice"] = 1
+    with pytest.raises(ValueError):
+        response_from_json(json.dumps(answer))
