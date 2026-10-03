@@ -1,5 +1,13 @@
 # Judgment Provider J1 contract handoff
 
+The merged PR #34 contract was corrected after
+`CORRECT_J1_CONTRACT_SEMANTICS_TYPESAFE_MAPPING`
+(`operator-decision-j1-contract-semantics-correction.yaml` on platform-control
+`717cace0d109105c406723de30cd72e4e3ed7dd4`). Provider-neutral Noul is removed.
+The executable path stays `mock_judgment` only. J2 is not implemented.
+
+
+
 **Date:** 2026-10-03
 
 Repository: kkobanenko/ai-core

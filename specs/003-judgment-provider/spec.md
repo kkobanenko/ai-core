@@ -8,12 +8,18 @@ Recorded authorization, not a new one:
 `coordination/initiatives/platform-factory-global-roadmap/evidence/operator-decision-authorize-j1-contract-only.yaml`,
 task `PC-SEMANTIC-JUDGMENT-J1-AUTH-01`.
 
-That decision authorizes the callable provider-neutral contract: interface,
-`Choice`, `Score`, `Noul`, schemas, validation, deadline, normalized errors,
-privacy/egress boundary, version pins, metadata-only telemetry, and contract
-tests. It does not authorize J2, real Jev calls, credentials, provider network
-execution, deployment, consumer migration, runtime catalog promotion,
-production, live execution, or authoritative decisions.
+That decision authorizes the callable provider-neutral contract. A later
+correction on the same Remote Truth,
+`coordination/initiatives/platform-factory-global-roadmap/evidence/operator-decision-j1-contract-semantics-correction.yaml`,
+task `PC-SEMANTIC-JUDGMENT-J1-CONTRACT-CORRECTION-01`, decision
+`CORRECT_J1_CONTRACT_SEMANTICS_TYPESAFE_MAPPING`. It replaces the mistaken superseded provider-neutral Noul draft with a batch-first contract:
+
+`BinaryQuestion` / `BinaryAnswer` (`probability_true`), `ChoiceQuestion` /
+`ChoiceAnswer`, and `ScoreQuestion` / `ScoreAnswer`.
+
+TypeSafe `Noul` is not an ai-core term. In a future J2 mapping it means only
+`P(true)` on `BinaryAnswer`. It does not mean wait, unknown, or human review.
+J2, real provider execution, and deployment stay unauthorized.
 
 ## Problem statement
 
@@ -58,7 +64,7 @@ admission remains future work (J2+).
 | **JudgmentProvider** | A future typed interface that receives a validated judgment request and returns a validated judgment response. It is separate from text completion. |
 | **Choice** | A finite, decision-pack-defined symbolic outcome. The provider may select only one declared choice. |
 | **Score** | A bounded numeric assessment with declared scale and meaning. A score is evidence, not authorization. |
-| **Noul** | A typed neutral/unknown result that states the provider cannot produce a usable judgment. It is not a hidden fallback, inferred approval, or missing field. |
+| **BinaryAnswer** | `probability_true` in [0, 1]. ai-core does not turn that probability into a boolean. |
 | **decision pack** | A consumer-owned, versioned definition of question, allowed choices, score semantics, criteria, thresholds, deterministic rules, and evaluation evidence. |
 | **admitted behavior** | A provider/model/version/decision-pack combination accepted by a separate governance decision for a bounded use. |
 
@@ -74,8 +80,7 @@ the contract result.
 
 - immutable `request_id` for correlation;
 - exact `decision_pack_id` and `decision_pack_version`;
-- a bounded question or criterion identifier defined by that decision pack;
-- declared allowed `Choice` values, score scale, and whether `Noul` is allowed;
+- a bounded ordered batch of named questions: `BinaryQuestion`, `ChoiceQuestion`, or `ScoreQuestion`;
 - a classified payload and explicit egress authorization input;
 - a total monotonic deadline covering the whole invocation;
 - an exact provider/model/version selection when one has been admitted.
@@ -87,18 +92,12 @@ not exact. A request never accepts `*-latest` for admitted behavior.
 
 ### Response
 
-`JudgmentResponse` contains exactly one result variant:
+`JudgmentResponse` is either a complete ordered answer batch or one normalized invocation error. There is no partial success and no provider-neutral neutral-result variant.
 
-- `choice`: one allowed `Choice`, with any required bounded `Score`;
-- `noul`: an explicit neutral/unknown reason code; or
-- `error`: a provider-neutral error classification.
+- success: one `BinaryAnswer`, `ChoiceAnswer`, or `ScoreAnswer` for each requested question, in the same names and order;
+- `error`: a provider-neutral error classification, with `answers` absent.
 
-It also contains the exact provider identity, model, model version, decision
-pack identifier/version, and non-payload execution metadata needed for
-validation. A successful choice must be declared by the request; a score must
-be finite and within the declared scale; a `Noul` must carry no implied
-choice. Invalid, incomplete, incompatible, or unparseable provider output is
-rejected before it reaches consumer logic.
+Named sequences keep JSON array order: questions, answers, and probability entries. Object keys stay sorted for determinism. A binary answer carries `probability_true` in [0, 1] and is not converted to a boolean. A choice answer names a declared choice and a probability distribution over those choices. A score answer carries `expected_score` inside the declared scale and a distribution over declared levels. Invalid, incomplete, incompatible, or unparseable provider output is rejected before it reaches consumer logic.
 
 ### Provider-neutral error taxonomy
 
@@ -162,14 +161,14 @@ Neither the provider result nor any provider implementation may:
 - automatically accept or reject a procurement or legal/business decision;
 - modify legally significant data, send email, export/write to 1C, or
   auto-merge entity/master-data records;
-- convert a missing confidence or `Noul` into approval or a lower review level.
+- convert a probability or confidence into approval, rejection, or a review level.
 
 ## Fail-neutral and fail-closed behavior
 
 ### J1 ai-core contract boundary
 
-J1 proves only what ai-core returns after validation and execution: a typed
-`choice`, `noul`, or provider-neutral `error`. ai-core does not read or mutate
+J1 proves only what ai-core returns after validation and execution: a complete
+answer batch or a provider-neutral `error`. ai-core does not read or mutate
 consumer queues, routing labels, model/effort selectors, or context filters.
 On failure, ai-core is fail-closed: invalid input and invalid provider output
 never reach consumer callbacks; privacy/egress denial occurs before transport;
@@ -186,7 +185,7 @@ outside ai-core. ai-core supplies the typed result or error; the consumer
 decides review, routing, tool use, and queue changes. The table below is
 reference design for that later protocol; J1 does not runtime-test these rows.
 
-| Decision surface | Error, timeout, invalid response, or `Noul` (consumer applies) |
+| Decision surface | Error, timeout, or invalid response (consumer applies its own threshold) |
 | --- | --- |
 | Tool selection | Do not call the tool; require human handoff where applicable. |
 | Egress, destructive action, access, or merge | Deny or require human review. |
@@ -202,7 +201,7 @@ overall judgment design.
 
 | Deferred item | Intended post-J1 behavior (consumer-owned) |
 | --- | --- |
-| Model, effort, and context selection | On judgment failure or `Noul`, preserve baseline model, baseline effort, and the complete original context chunk. |
+| Model, effort, and context selection | On judgment failure, preserve baseline model, baseline effort, and the complete original context chunk. |
 | `needs_review` routing state | On-prem document routing sets or preserves `needs_review`; no hosted fallback. |
 | Low-confidence routing and handling | Low-confidence outcomes preserve declared baselines and avoid manufacturing a more favorable result; routing follows consumer policy, not ai-core tests. |
 
@@ -262,8 +261,7 @@ package.
 (`AUTHORIZE_J1_CONTRACT_ONLY`, scope `contract_only`; evidence SHA
 `717cace0d109105c406723de30cd72e4e3ed7dd4`)
 
-- A typed `JudgmentProvider`, `Choice`, `Score`, and `Noul` contract validates
-  requests and responses without treating text/JSON generation as the result.
+- A typed batch `JudgmentProvider` contract of `Binary`, `Choice`, and `Score` questions and answers validates requests and responses without treating text/JSON generation as the result.
 - Contract tests prove invalid inputs and invalid provider responses cannot
   reach consumer logic.
 - Privacy/egress tests prove the gate runs before transport, credential lookup,
@@ -276,7 +274,7 @@ package.
   gates and separate governance admission.
 - Failure tests prove J1 ai-core fail-closed behavior (validation rejects
   bad input/output before consumers observe a result; privacy gate ordering;
-  no automatic approval from errors, `Noul`, or mock fixtures). They do not
+  no automatic approval from errors or mock fixtures). They do not
   assert consumer model/effort/context, `needs_review`, or low-confidence
   routing (see **Deferred beyond J1**).
 

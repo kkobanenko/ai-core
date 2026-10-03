@@ -63,7 +63,7 @@ network execution.
 
 | Proposed surface | Single responsibility |
 | --- | --- |
-| `src/ai_core/judgment_contracts.py` | Immutable request/response, `Choice`, `Score`, `Noul`, exact-pin, and decision-pack reference types. |
+| `src/ai_core/judgment_contracts.py` | Batch-first `Binary` / `Choice` / `Score` questions and answers, exact pins, and decision-pack reference. No provider-neutral Noul. |
 | `src/ai_core/judgment_validation.py` | Deterministic input and provider-response validation with no transport code. |
 | `src/ai_core/judgment_errors.py` | Provider-neutral error categories and conversion to typed judgment errors. |
 | `src/ai_core/judgment_runtime.py` | One total-deadline execution loop, bounded retry/fallback ownership, and fail-neutral result handling. |
@@ -94,13 +94,13 @@ handled later as a fail-neutral protocol for consumers and is not part of J1.
 
 | Test group | Deterministic evidence |
 | --- | --- |
-| Contract tests | Valid `Choice`, `Score`, and `Noul` round trips; undeclared choices, non-finite/out-of-range scores, ambiguous variants, missing exact pins, and invalid decision-pack references fail before consumers observe a result. |
+| Contract tests | Valid Binary, Choice, and Score answer round trips; undeclared choices, non-finite or out-of-range scores, mismatched variants, missing exact pins, and invalid decision-pack references fail before consumers observe a result. |
 | Privacy gate tests | Hosted providers receive only eligible classification; gate denial happens before mock transport, credential resolver, retry scheduler, and fallback selector are invoked. |
 | Deadline tests | Timeout, 429, 529, and provider-unavailable paths consume one shared deadline; no retry or fallback begins after budget exhaustion. |
 | Fallback tests | `kev_local` never selects a hosted fallback; unavailable paths yield typed errors or policy-permitted fallback only (no consumer baseline assertions). |
 | Serialization tests | Typed request and response metadata serialize deterministically; no free-form provider response is accepted as a result. |
 | Telemetry tests | Allowed metadata is emitted; prompts, responses, payload fragments, decision values, and credentials are absent by default. |
-| Fail-closed contract tests | Invalid input/output, privacy denial, deadline exhaustion, and mock error/`Noul` fixtures never expose unvalidated results or auto-approve; consumer model/effort/context, `needs_review`, and low-confidence routing are out of scope (see `spec.md` **Deferred beyond J1**). |
+| Fail-closed contract tests | Invalid input/output, privacy denial, deadline exhaustion, and mock error fixtures never expose unvalidated results or auto-approve; consumer model/effort/context, `needs_review`, and low-confidence routing are out of scope (see `spec.md` **Deferred beyond J1**). |
 | Catalog tests | A future `JUDGMENT` request remains ineligible without identity, exact model/capability authorization, privacy/egress, health, and governance admission. |
 
 ## Migration and compatibility constraints
