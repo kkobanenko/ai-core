@@ -63,7 +63,7 @@ network execution.
 
 | Proposed surface | Single responsibility |
 | --- | --- |
-| `src/ai_core/judgment_contracts.py` | Immutable request/response, `Choice`, `Score`, `Noul`, exact-pin, and decision-pack reference types. |
+| `src/ai_core/judgment_contracts.py` | Batch-first `Binary` / `Choice` / `Score` questions and answers, exact pins, and decision-pack reference. No provider-neutral Noul. |
 | `src/ai_core/judgment_validation.py` | Deterministic input and provider-response validation with no transport code. |
 | `src/ai_core/judgment_errors.py` | Provider-neutral error categories and conversion to typed judgment errors. |
 | `src/ai_core/judgment_runtime.py` | One total-deadline execution loop, bounded retry/fallback ownership, and fail-neutral result handling. |
