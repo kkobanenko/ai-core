@@ -830,3 +830,65 @@ def test_d4_telemetry_type_before_range() -> None:
         with pytest.raises(ValueError):
             response_to_json(response)
         assert validate_response_for_request(response, _request()) is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+
+
+def test_e1_oversized_score_fails_closed() -> None:
+    scale = ScoreScale("fit", 0.0, 1.0)
+    for value in (10**400, -(10**400), float("nan"), float("inf"), float("-inf"), True, "bad"):
+        raw = _bare(choice=Choice("yes"), score=Score("fit", value))  # type: ignore[arg-type]
+        response, _spy = _invoke(_request(score_scale=scale), raw)
+        assert response.error is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+
+
+def test_e2_request_json_must_be_semantically_valid() -> None:
+    valid = _request()
+    assert request_from_json(request_to_json(valid)) == valid
+    document = json.loads(request_to_json(valid))
+    cases = []
+    empty = dict(document)
+    empty["allowed_choices"] = []
+    cases.append(empty)
+    duplicate = dict(document)
+    duplicate["allowed_choices"] = ["yes", "yes"]
+    cases.append(duplicate)
+    latest = dict(document)
+    latest["model_version"] = "latest"
+    cases.append(latest)
+    star = dict(document)
+    star["provider"] = "jev-*"
+    cases.append(star)
+    inverted = dict(document)
+    inverted["score_scale"] = {"score_id": "fit", "minimum": 1, "maximum": 0}
+    cases.append(inverted)
+    hosted = dict(document)
+    hosted["hosted_boundary"] = True
+    hosted["network_boundary"] = "local_same_host"
+    cases.append(hosted)
+    for item in cases:
+        with pytest.raises(ValueError):
+            request_from_json(json.dumps(item))
+
+
+def test_e3_invalid_clock_fails_closed() -> None:
+    def clocks():
+        yield lambda: float("nan")
+        yield lambda: float("inf")
+        yield lambda: float("-inf")
+        yield lambda: None
+        yield lambda: "bad"
+        def raise_type():
+            raise TypeError("clock")
+        def raise_value():
+            raise ValueError("clock")
+        yield raise_type
+        yield raise_value
+
+    for clock in clocks():
+        fixture = SpyProvider(_choice())
+        response = invoke_judgment(_request(), provider_factory=fixture.factory, clock=clock)
+        assert response.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
+        assert response.choice is None
+        assert fixture.built == 0
+        assert fixture.calls == 0
+    zero = invoke_judgment(_request(deadline_monotonic=1.0), SpyProvider(_choice()), clock=lambda: 0.0)
+    assert zero.choice == Choice("yes")

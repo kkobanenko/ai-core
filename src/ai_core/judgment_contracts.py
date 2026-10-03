@@ -273,7 +273,7 @@ def request_from_json(text: str) -> JudgmentRequest:
     choices = loaded.get("allowed_choices")
     if not isinstance(choices, list) or any(not isinstance(item, str) for item in choices):
         raise ValueError("allowed_choices must be a list of strings")
-    return JudgmentRequest(
+    parsed = JudgmentRequest(
         request_id=_json_str(loaded.get("request_id"), "request_id"),
         decision_pack_id=_json_str(loaded.get("decision_pack_id"), "decision_pack_id"),
         decision_pack_version=_json_str(loaded.get("decision_pack_version"), "decision_pack_version"),
@@ -292,6 +292,13 @@ def request_from_json(text: str) -> JudgmentRequest:
         payload=loaded.get("payload"),
         score_scale=_json_scale(loaded.get("score_scale")),
     )
+    try:
+        problem = _request_error(parsed)
+    except (AttributeError, TypeError, OverflowError) as exc:
+        raise ValueError("request is not a valid J1 contract") from exc
+    if problem is not None:
+        raise ValueError("request is not a valid J1 contract")
+    return parsed
 
 
 def response_to_json(response: JudgmentResponse) -> str:
@@ -642,13 +649,14 @@ def _privacy_allows(request: JudgmentRequest) -> bool:
 
 
 def _deadline_open(request: JudgmentRequest, clock: Callable[[], float]) -> bool:
-    if not _finite_number(request.deadline_monotonic):
+    now = _safe_now(clock)
+    if now is None or not _finite_number(request.deadline_monotonic):
         return False
     try:
         deadline = float(request.deadline_monotonic)
     except OverflowError:
         return False
-    return _safe_now(clock) < deadline
+    return now < deadline
 
 
 def _checked_provider_result(request: JudgmentRequest, raw: object, latency_ms: int) -> JudgmentResponse:
@@ -698,7 +706,7 @@ def _score_error(request: JudgmentRequest, score: Score | None) -> JudgmentError
         return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
     if score.score_id != request.score_scale.score_id:
         return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
-    if isinstance(score.value, bool) or not isinstance(score.value, (int, float)) or not math.isfinite(score.value):
+    if not _finite_number(score.value):
         return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
     if score.value < request.score_scale.minimum or score.value > request.score_scale.maximum:
         return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
@@ -856,18 +864,25 @@ def _response_document(response: JudgmentResponse) -> dict:
     }
 
 
-def _safe_now(clock: Callable[[], float]) -> float:
+def _safe_now(clock: Callable[[], float]) -> float | None:
+    """Конечное монотонное время. Невалидные часы — это None, не ноль."""
     try:
-        value = float(clock())
-    except (TypeError, ValueError):
-        return 0.0
-    if not math.isfinite(value):
-        return 0.0
-    return value
+        value = clock()
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not _finite_number(value):
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except OverflowError:
+        return None
 
 
-def _safe_latency(started: float, clock: Callable[[], float]) -> int:
-    elapsed = _safe_now(clock) - started
+def _safe_latency(started: float | None, clock: Callable[[], float]) -> int:
+    now = _safe_now(clock)
+    if now is None or started is None:
+        return 0
+    elapsed = now - started
     if elapsed < 0:
         return 0
     return int(elapsed * 1000)
