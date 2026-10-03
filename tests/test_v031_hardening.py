@@ -172,7 +172,8 @@ def test_3_reserve_per_future_attempt_prevents_deadline_starvation() -> None:
         future_attempts=1,
         reserve_per_future_attempt_seconds=1.0,
     )
-    assert timeout_1 == 9.0
+    # now+10-now не всегда ровно 10. Смысл проверки — резерв 1 секунды.
+    assert timeout_1 == pytest.approx(9.0)
 
     runtime = SingleLoopRuntime(transport=mock_transport)
     plan = RoutePlan(eligible=(cand_1, cand_2), rejected=())
