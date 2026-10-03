@@ -14,6 +14,7 @@ from ai_core.judgment_contracts import (
     JudgmentResponse,
     JudgmentTelemetry,
     Noul,
+    NoulReason,
     Score,
     ScoreScale,
     grants_authority,
@@ -22,6 +23,7 @@ from ai_core.judgment_contracts import (
     request_to_json,
     response_from_json,
     response_to_json,
+    validate_response_for_request,
 )
 from ai_core.privacy import DataClass, OutboundForm
 from ai_core.provider_catalog import NetworkBoundary
@@ -253,20 +255,20 @@ def test_jc16_infinite_score_is_invalid() -> None:
 
 
 def test_jc17_allowed_noul() -> None:
-    raw = _bare(noul=Noul("unknown"))
+    raw = _bare(noul=Noul(NoulReason.NO_RELIABLE_JUDGMENT))
     response, _spy = _invoke(_request(noul_allowed=True), raw)
-    assert response.noul == Noul("unknown")
+    assert response.noul == Noul(NoulReason.NO_RELIABLE_JUDGMENT)
     assert response.choice is None
 
 
 def test_jc18_forbidden_noul() -> None:
-    raw = _bare(noul=Noul("unknown"))
+    raw = _bare(noul=Noul(NoulReason.NO_RELIABLE_JUDGMENT))
     response, _spy = _invoke(_request(noul_allowed=False), raw)
     assert response.error is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
 
 
 def test_jc19_noul_with_choice_is_invalid() -> None:
-    raw = _bare(choice=Choice("yes"), noul=Noul("unknown"))
+    raw = _bare(choice=Choice("yes"), noul=Noul(NoulReason.NO_RELIABLE_JUDGMENT))
     response, _spy = _invoke(_request(), raw)
     assert response.error is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
     assert response.noul is None
@@ -274,7 +276,7 @@ def test_jc19_noul_with_choice_is_invalid() -> None:
 
 
 def test_jc20_both_variants_are_invalid() -> None:
-    raw = _bare(choice=Choice("yes"), noul=Noul("unknown"))
+    raw = _bare(choice=Choice("yes"), noul=Noul(NoulReason.NO_RELIABLE_JUDGMENT))
     response, _spy = _invoke(_request(), raw)
     assert response.error is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
 
@@ -365,7 +367,7 @@ def test_jc32_invalid_response_hides_bad_choice() -> None:
 
 
 def test_jc33_noul_is_not_approval() -> None:
-    raw = _bare(noul=Noul("unknown"))
+    raw = _bare(noul=Noul(NoulReason.NO_RELIABLE_JUDGMENT))
     response, _spy = _invoke(_request(), raw)
     assert response.noul is not None
     assert not hasattr(response.noul, "choice")
@@ -469,3 +471,108 @@ def test_r4_malformed_json_types_are_not_coerced() -> None:
     answer["choice"] = 1
     with pytest.raises(ValueError):
         response_from_json(json.dumps(answer))
+
+
+def test_b1_noul_reason_is_bounded() -> None:
+    valid, _spy = _invoke(_request(), _bare(noul=Noul(NoulReason.INSUFFICIENT_EVIDENCE)))
+    assert valid.noul == Noul(NoulReason.INSUFFICIENT_EVIDENCE)
+    restored = response_from_json(response_to_json(valid))
+    assert restored.noul == valid.noul
+    leaked, _other = _invoke(_request(), _bare(noul=Noul("super-secret-token sentence")))  # type: ignore[arg-type]
+    assert leaked.error is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+    assert "super-secret-token" not in response_to_json(leaked)
+    document = json.loads(response_to_json(valid))
+    document["noul"] = "the model cannot decide"
+    with pytest.raises(ValueError):
+        response_from_json(json.dumps(document))
+
+
+def test_b2_response_json_invariants() -> None:
+    valid, _spy = _invoke(_request(), _choice())
+    document = json.loads(response_to_json(valid))
+    both = dict(document)
+    both["noul"] = NoulReason.AMBIGUOUS_INPUT.value
+    with pytest.raises(ValueError):
+        response_from_json(json.dumps(both))
+    empty = dict(document)
+    empty["choice"] = None
+    empty["score"] = None
+    with pytest.raises(ValueError):
+        response_from_json(json.dumps(empty))
+    negative = dict(document)
+    negative["telemetry"] = dict(document["telemetry"])
+    negative["telemetry"]["retry_count"] = -1
+    with pytest.raises(ValueError):
+        response_from_json(json.dumps(negative))
+    late = dict(document)
+    late["telemetry"] = dict(document["telemetry"])
+    late["telemetry"]["latency_ms"] = -5
+    with pytest.raises(ValueError):
+        response_from_json(json.dumps(late))
+    parsed = response_from_json(response_to_json(valid))
+    assert validate_response_for_request(parsed, _request()) is None
+    foreign = _choice("no")
+    assert validate_response_for_request(foreign, _request()) is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+
+
+def test_b3_malformed_choice_collection_is_invalid_request() -> None:
+    samples = (None, "ABC", (1,), (None,), ({},), (), ("yes", "yes"))
+    for choices in samples:
+        response, spy = _invoke(_request(allowed_choices=choices), _choice())  # type: ignore[arg-type]
+        assert response.error is JudgmentErrorCategory.INVALID_REQUEST
+        assert spy.built == 0
+    ok, spy = _invoke(_request(allowed_choices=("yes",)), _choice())
+    assert ok.choice == Choice("yes")
+    assert spy.calls == 1
+
+
+def test_b4_positive_pin_grammar() -> None:
+    allowed = (
+        "typesafe_jev",
+        "jev-1.13.0",
+        "1.13.0",
+        "fixture-model",
+        "fixture-model-v1",
+        "lite-j1-fixture",
+        "provider_1",
+        "model.v2",
+        "a",
+        "1",
+    )
+    for pin in allowed:
+        response, spy = _invoke(_request(model_version=pin), _choice(model_version=pin))
+        assert response.error is None, pin
+        assert spy.calls == 1
+    rejected = (
+        "*",
+        "jev-*",
+        "latest",
+        "model-latest",
+        ">=1",
+        ">1",
+        "<=2",
+        "<2",
+        "^1.2",
+        "~1.2",
+        "1.x",
+        "1.*",
+        "1 || 2",
+        "1 - 2",
+        "1 && 2",
+        "1 | 2",
+        "1 & 2",
+        "1 + 2",
+        "1 / 2",
+        "1\\2",
+        "1,2",
+        "1 2",
+        "(1)",
+        "[1]",
+        "{1}",
+        " leading-space",
+        "trailing-space ",
+    )
+    for pin in rejected:
+        response, spy = _invoke(_request(model_version=pin), _choice())
+        assert response.error is JudgmentErrorCategory.INVALID_REQUEST, pin
+        assert spy.built == 0

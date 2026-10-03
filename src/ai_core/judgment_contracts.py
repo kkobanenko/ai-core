@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -26,7 +27,9 @@ FORBIDDEN_AUTHORITY = (
     "automatic_approval",
     "completion_authority",
 )
-# Для внешней границы суждения годны только эти классы.
+# Полное совпадение. Буква, цифра, точка, дефис и подчёркивание. Не селектор.
+_EXACT_PIN = re.compile(r"^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*$")
+_RESERVED_PIN_PARTS = frozenset({"latest", "x"})
 HOSTED_DATA_CLASSES = frozenset({DataClass.SYNTHETIC, DataClass.PUBLIC_NO_PII})
 
 
@@ -42,6 +45,15 @@ class JudgmentErrorCategory(str, Enum):
     TRANSPORT_FAILED = "transport_failed"
     INVALID_PROVIDER_RESPONSE = "invalid_provider_response"
     INTERNAL_ERROR = "internal_error"
+
+
+class NoulReason(str, Enum):
+    """Закрытый код отказа. Свободный текст провайдера сюда не входит."""
+
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    AMBIGUOUS_INPUT = "ambiguous_input"
+    UNSUPPORTED_CRITERION = "unsupported_criterion"
+    NO_RELIABLE_JUDGMENT = "no_reliable_judgment"
 
 
 @dataclass(frozen=True)
@@ -72,7 +84,7 @@ class Score:
 class Noul:
     """Провайдер не смог дать пригодное суждение. Скрытого Choice здесь нет."""
 
-    reason_code: str
+    reason_code: NoulReason
 
 
 @dataclass(frozen=True)
@@ -149,7 +161,10 @@ def invoke_judgment(
     Общий монотонный срок остаётся одним на будущий повтор.
     """
     started = _now(clock)
-    invalid = _request_error(request)
+    try:
+        invalid = _request_error(request)
+    except (AttributeError, TypeError):
+        return _error_response(request, JudgmentErrorCategory.INVALID_REQUEST, _latency(started, clock))
     if invalid is not None:
         return _error_response(request, invalid, _latency(started, clock))
     if not _privacy_allows(request):
@@ -233,7 +248,7 @@ def response_from_json(text: str) -> JudgmentResponse:
         decision_pack_id=_json_str(telemetry_raw.get("decision_pack_id"), "decision_pack_id"),
         decision_pack_version=_json_str(telemetry_raw.get("decision_pack_version"), "decision_pack_version"),
     )
-    return JudgmentResponse(
+    parsed = JudgmentResponse(
         provider=_json_str(loaded.get("provider"), "provider"),
         model=_json_str(loaded.get("model"), "model"),
         model_version=_json_str(loaded.get("model_version"), "model_version"),
@@ -245,6 +260,88 @@ def response_from_json(text: str) -> JudgmentResponse:
         noul=_json_noul(loaded.get("noul")),
         error=_json_error(loaded.get("error")),
     )
+    if _structural_problem(parsed) is not None:
+        raise ValueError("response JSON violates the J1 contract")
+    return parsed
+
+
+def validate_response_for_request(response: JudgmentResponse, request: JudgmentRequest) -> JudgmentErrorCategory | None:
+    """Сначала структура ответа. Потом сверка с запросом."""
+    if _structural_problem(response) is not None:
+        return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+    if not _identity_matches(request, response):
+        return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+    if response.error is not None:
+        return None
+    if response.noul is not None:
+        if request.noul_allowed is not True:
+            return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+        return None
+    if response.choice is None or response.choice.value not in request.allowed_choices:
+        return JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+    return _score_error(request, response.score)
+
+
+def _structural_problem(response: JudgmentResponse) -> str | None:
+    """Инварианты ответа без знания запроса."""
+    if not isinstance(response, JudgmentResponse):
+        return "response type"
+    if not all(_exact_pin(item) for item in (
+        response.provider,
+        response.model,
+        response.model_version,
+        response.decision_pack_id,
+        response.decision_pack_version,
+    )):
+        return "identity"
+    if response.choice is not None and not isinstance(response.choice, Choice):
+        return "choice type"
+    if response.score is not None and not isinstance(response.score, Score):
+        return "score type"
+    if response.noul is not None and not isinstance(response.noul, Noul):
+        return "noul type"
+    if response.error is not None and not isinstance(response.error, JudgmentErrorCategory):
+        return "error type"
+    present = (
+        response.choice is not None,
+        response.noul is not None,
+        response.error is not None,
+    )
+    if sum(1 for item in present if item) != 1:
+        return "variant count"
+    if response.choice is not None and not _exact_pin(response.choice.value):
+        return "choice value"
+    if response.noul is not None and not isinstance(response.noul.reason_code, NoulReason):
+        return "noul reason"
+    if response.score is not None:
+        if response.choice is None or not _score_shape_ok(response.score):
+            return "score"
+    if response.error is not None and response.score is not None:
+        return "score with error"
+    telemetry = response.telemetry
+    if not isinstance(telemetry, JudgmentTelemetry):
+        return "telemetry"
+    if telemetry.retry_count < 0 or telemetry.latency_ms < 0:
+        return "telemetry range"
+    if not isinstance(telemetry.retry_count, int) or isinstance(telemetry.retry_count, bool):
+        return "retry type"
+    if not isinstance(telemetry.latency_ms, int) or isinstance(telemetry.latency_ms, bool):
+        return "latency type"
+    if (
+        telemetry.provider != response.provider
+        or telemetry.model != response.model
+        or telemetry.model_version != response.model_version
+        or telemetry.decision_pack_id != response.decision_pack_id
+        or telemetry.decision_pack_version != response.decision_pack_version
+    ):
+        return "telemetry identity"
+    return None
+
+
+def _score_shape_ok(score: Score) -> bool:
+    if not isinstance(score.score_id, str) or not _exact_pin(score.score_id):
+        return False
+    return _finite_number(score.value)
 
 
 def grants_authority(response: JudgmentResponse) -> bool:
@@ -312,7 +409,13 @@ def _json_score(value: object) -> Score | None:
 def _json_noul(value: object) -> Noul | None:
     if value is None:
         return None
-    return Noul(_json_str(value, "noul"))
+    if not isinstance(value, str):
+        raise ValueError("noul must be a string")
+    try:
+        reason = NoulReason(value)
+    except ValueError as exc:
+        raise ValueError("noul reason is outside the closed set") from exc
+    return Noul(reason)
 
 
 def _json_error(value: object) -> JudgmentErrorCategory | None:
@@ -322,6 +425,8 @@ def _json_error(value: object) -> JudgmentErrorCategory | None:
 
 
 def _request_error(request: JudgmentRequest) -> JudgmentErrorCategory | None:
+    if not isinstance(request, JudgmentRequest):
+        return JudgmentErrorCategory.INVALID_REQUEST
     names = (
         request.request_id,
         request.decision_pack_id,
@@ -331,19 +436,22 @@ def _request_error(request: JudgmentRequest) -> JudgmentErrorCategory | None:
         request.model,
         request.model_version,
     )
-    if any(not isinstance(item, str) or item.strip() == "" for item in names):
+    if any(not isinstance(item, str) for item in names):
         return JudgmentErrorCategory.INVALID_REQUEST
-    if not _exact_pin(request.provider) or not _exact_pin(request.model) or not _exact_pin(request.model_version):
+    if any(not _exact_pin(item) for item in names):
         return JudgmentErrorCategory.INVALID_REQUEST
-    if not _exact_pin(request.decision_pack_id) or not _exact_pin(request.decision_pack_version):
+    choices = request.allowed_choices
+    if not isinstance(choices, tuple):
         return JudgmentErrorCategory.INVALID_REQUEST
-    if not isinstance(request.criterion_id, str) or not _exact_pin(request.criterion_id):
+    if any(not isinstance(item, str) for item in choices):
         return JudgmentErrorCategory.INVALID_REQUEST
-    if len(request.allowed_choices) == 0:
+    if len(choices) == 0 or len(set(choices)) != len(choices):
         return JudgmentErrorCategory.INVALID_REQUEST
-    if len(set(request.allowed_choices)) != len(request.allowed_choices):
+    if any(not _exact_pin(item) for item in choices):
         return JudgmentErrorCategory.INVALID_REQUEST
-    if any(not isinstance(item, str) or item.strip() == "" for item in request.allowed_choices):
+    if not isinstance(request.noul_allowed, bool):
+        return JudgmentErrorCategory.INVALID_REQUEST
+    if not isinstance(request.request_egress_authorized, bool) or not isinstance(request.hosted_boundary, bool):
         return JudgmentErrorCategory.INVALID_REQUEST
     if not isinstance(request.data_class, DataClass) or not isinstance(request.outbound_form, OutboundForm):
         return JudgmentErrorCategory.INVALID_REQUEST
@@ -358,28 +466,30 @@ def _request_error(request: JudgmentRequest) -> JudgmentErrorCategory | None:
     return None
 
 
-def _scale_ok(scale: ScoreScale) -> bool:
-    if scale.score_id.strip() == "" or not _exact_pin(scale.score_id):
+def _scale_ok(scale: object) -> bool:
+    if not isinstance(scale, ScoreScale):
         return False
-    if not math.isfinite(scale.minimum) or not math.isfinite(scale.maximum):
+    if not isinstance(scale.score_id, str) or not _exact_pin(scale.score_id):
+        return False
+    if not _finite_number(scale.minimum) or not _finite_number(scale.maximum):
         return False
     return scale.minimum < scale.maximum
 
 
-def _exact_pin(value: str) -> bool:
-    """Точный литерал. Селекторы и latest не являются версией."""
-    text = value.strip()
-    lowered = text.lower()
-    if lowered == "" or lowered == "latest":
+def _finite_number(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
-    if lowered.endswith("-latest") or lowered.endswith("_latest"):
+    return math.isfinite(value)
+
+
+def _exact_pin(value: object) -> bool:
+    """Точный литерал на всю строку. Селектор не проходит."""
+    if not isinstance(value, str):
         return False
-    # *, диапазоны и шаблоны могут выбрать другую версию позже.
-    if any(character in text for character in "*><=^~"):
+    if _EXACT_PIN.fullmatch(value) is None:
         return False
-    if any(part.lower() == "x" for part in text.split(".")):
-        return False
-    return True
+    parts = re.split(r"[._-]", value)
+    return all(part.lower() not in _RESERVED_PIN_PARTS for part in parts)
 
 
 def _privacy_allows(request: JudgmentRequest) -> bool:
@@ -431,7 +541,7 @@ def _checked_provider_result(request: JudgmentRequest, raw: object, latency_ms: 
     if raw.noul is not None:
         if request.noul_allowed is not True:
             return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
-        if not isinstance(raw.noul.reason_code, str) or raw.noul.reason_code.strip() == "" or raw.choice is not None or raw.score is not None:
+        if not isinstance(raw.noul.reason_code, NoulReason) or raw.choice is not None or raw.score is not None:
             return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
         return _success_response(request, None, None, raw.noul, latency_ms)
     choice = raw.choice
@@ -563,7 +673,7 @@ def _response_document(response: JudgmentResponse) -> dict:
         "error": None if response.error is None else response.error.value,
         "model": response.model,
         "model_version": response.model_version,
-        "noul": None if response.noul is None else response.noul.reason_code,
+        "noul": None if response.noul is None else response.noul.reason_code.value,
         "provider": response.provider,
         "score": score,
         "telemetry": {
