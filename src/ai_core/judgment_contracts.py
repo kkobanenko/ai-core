@@ -10,7 +10,8 @@ import json
 import math
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Protocol
@@ -691,12 +692,12 @@ def _decision_pack_known(
             remaining = 0.0
         if remaining <= 0:
             raise FutureTimeoutError()
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(resolver, request.decision_pack_id, request.decision_pack_version)
-        try:
-            known = future.result(timeout=remaining)
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+        known = _run_with_daemon_timeout(
+            resolver,
+            request.decision_pack_id,
+            request.decision_pack_version,
+            timeout_seconds=remaining,
+        )
     else:
         try:
             known = resolver(request.decision_pack_id, request.decision_pack_version)
@@ -706,8 +707,8 @@ def _decision_pack_known(
 
 
 def _identity_text_ok(*values: object) -> bool:
-    """Строка и точный литерал. Сравнение с враждебным __eq__ сюда не доходит."""
-    return all(_exact_pin(item) for item in values)
+    """Точный тип str и точный литерал. Сравнение с враждебным __eq__ сюда не доходит."""
+    return all(type(item) is str and _exact_pin(item) for item in values)
 
 
 def _privacy_allows(request: JudgmentRequest) -> bool:
@@ -759,6 +760,25 @@ def _latency_from(started: float | None, now: float | None) -> int:
     return int(elapsed * 1000)
 
 
+def _run_with_daemon_timeout(func: Callable, *args: object, timeout_seconds: float) -> object:
+    """Выполнить функцию в фоновом daemon-потоке с таймаутом без удержания зависших non-daemon воркеров."""
+    import threading
+    future: Future = Future()
+
+    def worker() -> None:
+        try:
+            res = func(*args)
+            if not future.done():
+                future.set_result(res)
+        except BaseException as exc:
+            if not future.done():
+                future.set_exception(exc)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    return future.result(timeout=timeout_seconds)
+
+
 def _judge_within_deadline(active: JudgmentProvider, request: JudgmentRequest, now: float) -> object:
     """Ждём judge только оставшийся срок. Опоздавший результат не читаем."""
     try:
@@ -768,12 +788,7 @@ def _judge_within_deadline(active: JudgmentProvider, request: JudgmentRequest, n
     if remaining <= 0:
         raise FutureTimeoutError()
     # Один рабочий поток. Отмена не убивает уже начатый judge, но ожидание кончается.
-    executor = ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(active.judge, request)
-    try:
-        return future.result(timeout=remaining)
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+    return _run_with_daemon_timeout(active.judge, request, timeout_seconds=remaining)
 
 
 def _with_latency(response: JudgmentResponse, latency_ms: int) -> JudgmentResponse:

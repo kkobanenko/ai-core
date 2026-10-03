@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
 from pathlib import Path
 
@@ -1006,6 +1007,7 @@ def test_round_1_resolver_deadline_bounded() -> None:
     started = time.monotonic()
     req = _request(deadline_monotonic=started + 0.1)
     res = invoke_judgment(req, decision_pack_known=blocking_resolver)
+
     elapsed = time.monotonic() - started
     assert res.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
     assert res.choice is None
@@ -1036,3 +1038,68 @@ def test_round_1_reject_non_finite_payload_json() -> None:
     req_inf = _request(payload={"value": float("inf")})
     with pytest.raises(ValueError):
         request_to_json(req_inf)
+
+
+def test_round_2_daemon_thread_no_blocking_worker_retention() -> None:
+    """Prove that timed-out resolver or judge runs on a daemon thread so it cannot block process shutdown."""
+    worker_thread = None
+
+    def blocking_resolver(pack_id: str, version: str) -> bool:
+        nonlocal worker_thread
+        worker_thread = threading.current_thread()
+        time.sleep(2.0)
+        return True
+
+    started = time.monotonic()
+    req = _request(deadline_monotonic=started + 0.1)
+    res = invoke_judgment(req, decision_pack_known=blocking_resolver)
+    assert res.error is JudgmentErrorCategory.DEADLINE_EXHAUSTED
+    assert worker_thread is not None
+    assert worker_thread.daemon is True
+
+
+def test_round_2_reject_hostile_str_subclass_in_response() -> None:
+    """Prove that str subclasses in response or telemetry identity are rejected as INVALID_PROVIDER_RESPONSE."""
+    class HostileStr(str):
+        def __eq__(self, other: object) -> bool:
+            raise RuntimeError("hostile eq override invoked")
+
+    raw = _choice()
+    # Replace response provider with HostileStr
+    hostile_response = JudgmentResponse(
+        provider=HostileStr(raw.provider),
+        model=raw.model,
+        model_version=raw.model_version,
+        decision_pack_id=raw.decision_pack_id,
+        decision_pack_version=raw.decision_pack_version,
+        telemetry=raw.telemetry,
+        choice=raw.choice,
+    )
+    assert validate_response_for_request(hostile_response, _request()) is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+    with pytest.raises(ValueError):
+        response_to_json(hostile_response)
+
+    # Also test hostile subclass in telemetry provider
+    hostile_telemetry = JudgmentTelemetry(
+        outcome=JudgmentOutcome.CHOICE,
+        error_category=None,
+        latency_ms=0,
+        retry_count=0,
+        provider=HostileStr(raw.provider),
+        model=raw.model,
+        model_version=raw.model_version,
+        decision_pack_id=raw.decision_pack_id,
+        decision_pack_version=raw.decision_pack_version,
+    )
+    hostile_tel_response = JudgmentResponse(
+        provider=raw.provider,
+        model=raw.model,
+        model_version=raw.model_version,
+        decision_pack_id=raw.decision_pack_id,
+        decision_pack_version=raw.decision_pack_version,
+        telemetry=hostile_telemetry,
+        choice=raw.choice,
+    )
+    assert validate_response_for_request(hostile_tel_response, _request()) is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+    with pytest.raises(ValueError):
+        response_to_json(hostile_tel_response)
