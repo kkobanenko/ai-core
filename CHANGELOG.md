@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.3.2 - Unreleased
+## 0.3.3 - 2026-10-04
+
+### Added
+- **Canonical J1 JudgmentProvider contract**: Canonical provider-neutral `JudgmentProvider` contract supporting batch-first named questions (`BinaryQuestion`, `ChoiceQuestion`, `ScoreQuestion`) and answers (`BinaryAnswer`, `ChoiceAnswer`, `ScoreAnswer`).
+- **J1 Execution**: Deterministic mock-only execution.
 
 ### Changed
 - **GPU trust boundary**: `gpu_ollama` is `INTERNAL_TRUSTED` (`internal_trusted`). It is not `LOCAL_SAME_HOST` and not `UNKNOWN_BOUNDARY`. `INTERNAL_TRUSTED` allows every valid non-SECRET data class, including `PRIVATE_CLIENT_DATA`, without external-cloud egress authorization. `SECRET` stays denied for every boundary and every outbound form. `EXTERNAL` and `UNKNOWN_BOUNDARY` still require literal `request_egress_authorized=True`.
