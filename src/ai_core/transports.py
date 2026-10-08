@@ -161,7 +161,7 @@ class OllamaTransport:
                     latency_seconds=time.perf_counter() - start_time,
                 )
             api_key = request.api_key or os.environ.get("OLLAMA_API_KEY", "")
-            if not api_key or "\\r" in api_key or "\\n" in api_key:
+            if not api_key or "\r" in api_key or "\n" in api_key:
                 return TransportAttemptResult(
                     candidate=request.candidate,
                     response=None,
