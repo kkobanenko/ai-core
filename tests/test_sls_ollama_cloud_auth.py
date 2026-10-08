@@ -55,12 +55,14 @@ def _req(*, egress=True, api_key=None):
 
 
 def test_cloud_default_host_is_official_endpoint(monkeypatch):
+    monkeypatch.setenv("AI_CORE_OLLAMA_CLOUD_AUTH_MODE", "direct")
     monkeypatch.delenv("AI_CORE_OLLAMA_CLOUD_ENDPOINT", raising=False)
     transport = get_transport_for_candidate(_CLOUD)
     assert transport._default_endpoint == "https://ollama.com"
 
 
 def test_cloud_without_egress_or_key_is_fail_closed(monkeypatch):
+    monkeypatch.setenv("AI_CORE_OLLAMA_CLOUD_AUTH_MODE", "direct")
     monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
     opener = _FakeOpener()
     monkeypatch.setattr(urllib.request, "build_opener", lambda *_: opener)
@@ -77,16 +79,18 @@ def test_cloud_without_egress_or_key_is_fail_closed(monkeypatch):
 
 
 def test_cloud_key_never_sent_to_untrusted_endpoint(monkeypatch):
+    monkeypatch.setenv("AI_CORE_OLLAMA_CLOUD_AUTH_MODE", "direct")
     opener = _FakeOpener()
     monkeypatch.setattr(urllib.request, "build_opener", lambda *_: opener)
     for endpoint in ("http://ollama.com", "https://evil.invalid", "https://ollama.com.evil.invalid"):
-        transport = OllamaTransport(default_endpoint=endpoint)
+        transport = OllamaTransport(default_endpoint=endpoint, authenticated_cloud=True)
         result = transport.send_attempt(_req(api_key="example-only-not-secret"))
         assert not result.ok and result.error.kind == AiErrorKind.BAD_REQUEST
     assert opener.requests == []
 
 
 def test_cloud_uses_bearer_and_single_request(monkeypatch):
+    monkeypatch.setenv("AI_CORE_OLLAMA_CLOUD_AUTH_MODE", "direct")
     opener = _FakeOpener()
     monkeypatch.setattr(urllib.request, "build_opener", lambda *_: opener)
     transport = get_transport_for_candidate(_CLOUD)
@@ -103,6 +107,7 @@ def test_cloud_uses_bearer_and_single_request(monkeypatch):
 
 
 def test_cloud_resolves_key_from_environment(monkeypatch):
+    monkeypatch.setenv("AI_CORE_OLLAMA_CLOUD_AUTH_MODE", "direct")
     opener = _FakeOpener()
     monkeypatch.setattr(urllib.request, "build_opener", lambda *_: opener)
     monkeypatch.setenv("OLLAMA_API_KEY", "env-example-only-not-secret")
@@ -110,3 +115,56 @@ def test_cloud_resolves_key_from_environment(monkeypatch):
     assert result.ok
     request, _ = opener.requests[0]
     assert request.get_header("Authorization") == "Bearer env-example-only-not-secret"
+
+
+def test_cloud_legacy_default_and_headers_are_unchanged(monkeypatch):
+    """Without the opt-in, existing cloud consumers retain the old endpoint/payload."""
+    monkeypatch.delenv("AI_CORE_OLLAMA_CLOUD_AUTH_MODE", raising=False)
+    monkeypatch.delenv("AI_CORE_OLLAMA_CLOUD_ENDPOINT", raising=False)
+    monkeypatch.setenv("OLLAMA_API_KEY", "not-forwarded-without-opt-in")
+    opener = _FakeOpener()
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *_: opener)
+
+    transport = get_transport_for_candidate(_CLOUD)
+    assert type(transport) is OllamaTransport
+    assert transport._default_endpoint == "https://api.ollama.com"
+    assert transport._authenticated_cloud is False
+    result = transport.send_attempt(_req(egress=True))
+    assert result.ok
+    assert len(opener.requests) == 1
+    sent, _ = opener.requests[0]
+    assert sent.full_url == "https://api.ollama.com/api/chat"
+    assert sent.get_header("Authorization") is None
+    assert sent.get_header("Content-type") == "application/json"
+    assert sent.get_header("Accept") == "application/json"
+
+
+def test_vm100_and_gpu_behavior_remain_unchanged_in_direct_mode(monkeypatch):
+    """Cloud opt-in must not modify local and GPU Ollama transports."""
+    monkeypatch.setenv("AI_CORE_OLLAMA_CLOUD_AUTH_MODE", "direct")
+    monkeypatch.setenv("OLLAMA_API_KEY", "never-send-to-local-models")
+    for provider, endpoint in (
+        ("vm100_local_ollama", "http://127.0.0.1:11434"),
+        ("gpu_ollama", "http://127.0.0.1:11435"),
+    ):
+        monkeypatch.delenv(
+            "AI_CORE_VM100_OLLAMA_ENDPOINT"
+            if provider == "vm100_local_ollama"
+            else "AI_CORE_GPU_OLLAMA_ENDPOINT",
+            raising=False,
+        )
+        opener = _FakeOpener()
+        monkeypatch.setattr(urllib.request, "build_opener", lambda *_: opener)
+        candidate = RouteCandidate(provider_id=provider, model="qwen3:8b")
+        transport = get_transport_for_candidate(candidate)
+        assert transport._default_endpoint == endpoint
+        assert transport._authenticated_cloud is False
+        result = transport.send_attempt(
+            TransportRequest(
+                candidate=candidate,
+                messages=({"role": "user", "content": "hello"},),
+            )
+        )
+        assert result.ok
+        assert opener.requests[0][0].get_header("Authorization") is None
+        assert opener.requests[0][0].full_url == endpoint + "/api/chat"
