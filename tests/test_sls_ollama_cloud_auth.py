@@ -8,9 +8,11 @@ from __future__ import annotations
 import json
 import urllib.request
 
+from ai_core.capabilities import ProviderCapability
 from ai_core.errors import AiErrorKind
+from ai_core.executor import DEFAULT_CANDIDATES, DEFAULT_GOVERNED_CAPABILITIES
 from ai_core.routing import RouteCandidate
-from ai_core.transports import OllamaTransport, TransportRequest, get_transport_for_candidate
+from ai_core.transports import (MistralTransport, OllamaTransport, TransportRequest, get_transport_for_candidate)
 
 
 _CLOUD = RouteCandidate(provider_id="ollama_cloud", model="gpt-oss:20b-cloud")
@@ -168,3 +170,26 @@ def test_vm100_and_gpu_behavior_remain_unchanged_in_direct_mode(monkeypatch):
         assert result.ok
         assert opener.requests[0][0].get_header("Authorization") is None
         assert opener.requests[0][0].full_url == endpoint + "/api/chat"
+
+
+def test_existing_default_route_and_mistral_contract_unchanged(monkeypatch):
+    monkeypatch.setenv("AI_CORE_OLLAMA_CLOUD_AUTH_MODE", "direct")
+    assert [(c.provider_id, c.model) for c in DEFAULT_CANDIDATES] == [
+        ("vm100_local_ollama", "qwen3:8b"),
+        ("gpu_ollama", "qwen3:8b"),
+        ("mistral_external", "mistral-small-latest"),
+    ]
+    assert ("vm100_local_ollama", "qwen3:8b", ProviderCapability.TEXT) in (
+        DEFAULT_GOVERNED_CAPABILITIES
+    )
+    assert ("gpu_ollama", "qwen3:8b", ProviderCapability.TEXT) in (
+        DEFAULT_GOVERNED_CAPABILITIES
+    )
+    assert ("ollama_cloud", "gpt-oss:20b-cloud", ProviderCapability.TEXT) not in (
+        DEFAULT_GOVERNED_CAPABILITIES
+    )
+    mistral = get_transport_for_candidate(
+        RouteCandidate("mistral_external", "mistral-small-latest")
+    )
+    assert type(mistral) is MistralTransport
+    assert mistral._default_endpoint == "https://api.mistral.ai"
