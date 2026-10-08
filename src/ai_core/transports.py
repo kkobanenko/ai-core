@@ -132,6 +132,44 @@ class OllamaTransport:
         base_endpoint = (request.endpoint or self._default_endpoint).rstrip("/")
         url = f"{base_endpoint}/api/chat"
 
+        # Direct cloud inference is a distinct EXTERNAL trust boundary. Do not
+        # send a bearer token to an operator-supplied or redirected endpoint.
+        cloud_headers: dict[str, str] = {}
+        if request.candidate.provider_id == "ollama_cloud":
+            parsed = urllib.parse.urlparse(base_endpoint)
+            if (
+                parsed.scheme != "https"
+                or parsed.hostname != "ollama.com"
+                or parsed.port not in (None, 443)
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path not in ("", "/")
+                or parsed.query
+                or parsed.fragment
+            ):
+                return TransportAttemptResult(
+                    candidate=request.candidate,
+                    response=None,
+                    error=ErrorDescriptor(AiErrorKind.BAD_REQUEST, None, False, False, True),
+                    latency_seconds=time.perf_counter() - start_time,
+                )
+            if request.request_egress_authorized is not True:
+                return TransportAttemptResult(
+                    candidate=request.candidate,
+                    response=None,
+                    error=ErrorDescriptor(AiErrorKind.AUTH, None, False, False, True),
+                    latency_seconds=time.perf_counter() - start_time,
+                )
+            api_key = request.api_key or os.environ.get("OLLAMA_API_KEY", "")
+            if not api_key or "\\r" in api_key or "\\n" in api_key:
+                return TransportAttemptResult(
+                    candidate=request.candidate,
+                    response=None,
+                    error=ErrorDescriptor(AiErrorKind.AUTH, None, False, False, True),
+                    latency_seconds=time.perf_counter() - start_time,
+                )
+            cloud_headers["Authorization"] = f"Bearer {api_key}"
+
         options: dict[str, Any] = {"temperature": request.temperature}
         if request.extra_options:
             options.update(dict(request.extra_options))
@@ -150,6 +188,7 @@ class OllamaTransport:
             headers={
                 "Content-Type": "application/json",
                 "Accept": "application/json",
+                **cloud_headers,
             },
             method="POST",
         )
@@ -359,7 +398,7 @@ def get_transport_for_candidate(
 
     if candidate.provider_id == "ollama_cloud":
         endpoint = default_ollama_endpoint or os.environ.get(
-            "AI_CORE_OLLAMA_CLOUD_ENDPOINT", "https://api.ollama.com"
+            "AI_CORE_OLLAMA_CLOUD_ENDPOINT", "https://ollama.com"
         )
         return OllamaTransport(default_endpoint=endpoint)
 
