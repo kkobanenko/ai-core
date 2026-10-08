@@ -121,8 +121,15 @@ class OllamaTransport:
 
     DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
 
-    def __init__(self, default_endpoint: str | None = None) -> None:
+    def __init__(
+        self,
+        default_endpoint: str | None = None,
+        *,
+        authenticated_cloud: bool = False,
+    ) -> None:
         self._default_endpoint = default_endpoint or self.DEFAULT_ENDPOINT
+        # Opt-in only: legacy OllamaTransport callers retain identical behavior.
+        self._authenticated_cloud = authenticated_cloud
 
     def send_attempt(
         self,
@@ -135,7 +142,7 @@ class OllamaTransport:
         # Direct cloud inference is a distinct EXTERNAL trust boundary. Do not
         # send a bearer token to an operator-supplied or redirected endpoint.
         cloud_headers: dict[str, str] = {}
-        if request.candidate.provider_id == "ollama_cloud":
+        if request.candidate.provider_id == "ollama_cloud" and self._authenticated_cloud:
             parsed = urllib.parse.urlparse(base_endpoint)
             if (
                 parsed.scheme != "https"
@@ -397,10 +404,14 @@ def get_transport_for_candidate(
         return OllamaTransport(default_endpoint=endpoint)
 
     if candidate.provider_id == "ollama_cloud":
+        # The existing route and default endpoint are intentionally unchanged.
+        # Direct authenticated cloud inference is a separate explicit runtime opt-in.
+        direct_auth = os.environ.get("AI_CORE_OLLAMA_CLOUD_AUTH_MODE") == "direct"
         endpoint = default_ollama_endpoint or os.environ.get(
-            "AI_CORE_OLLAMA_CLOUD_ENDPOINT", "https://ollama.com"
+            "AI_CORE_OLLAMA_CLOUD_ENDPOINT",
+            "https://ollama.com" if direct_auth else "https://api.ollama.com",
         )
-        return OllamaTransport(default_endpoint=endpoint)
+        return OllamaTransport(default_endpoint=endpoint, authenticated_cloud=direct_auth)
 
     if candidate.provider_id == "mistral_external":
         return MistralTransport(default_endpoint=default_mistral_endpoint)
