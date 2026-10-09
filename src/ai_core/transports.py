@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import time
 import urllib.error
@@ -117,7 +118,14 @@ class ProviderTransport(Protocol):
 
 
 _THINK_UNSET = object()
-_OLLAMA_RESERVED_EXTRA = frozenset({"model", "messages", "stream", "think"})
+_OLLAMA_RESERVED_EXTRA = frozenset(
+    {"model", "messages", "stream", "think", "format", "keep_alive"}
+)
+_MAX_KEEP_ALIVE_SECONDS = 1800
+_FORMAT_KEYS = frozenset(
+    {"type", "properties", "required", "additionalProperties", "items", "maxItems", "minItems"}
+)
+_FORMAT_TYPES = frozenset({"object", "array", "string", "boolean", "integer", "number"})
 
 
 def _valid_ollama_think(value: Any) -> bool:
@@ -130,21 +138,94 @@ def _valid_ollama_think(value: Any) -> bool:
     return False
 
 
+def _valid_keep_alive(value: Any) -> bool:
+    """Секунды или короткая длительность. Отрицательные и дольше 30 минут запрещены."""
+    if isinstance(value, bool):
+        return False
+    seconds: float | None = None
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            seconds = float(text)
+        else:
+            matched = re.fullmatch(r"(\d+)([smh])", text)
+            if matched is None:
+                return False
+            amount = int(matched.group(1))
+            unit = matched.group(2)
+            seconds = float(amount * {"s": 1, "m": 60, "h": 3600}[unit])
+    return seconds is not None and 0 <= seconds <= _MAX_KEEP_ALIVE_SECONDS
+
+
+def _plain_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _valid_format_node(value: Any, depth: int) -> bool:
+    """Схема JSON ограниченной глубины. Не произвольный кусок HTTP-тела."""
+    if depth > 6:
+        return False
+    if not isinstance(value, dict) or not set(value).issubset(_FORMAT_KEYS):
+        return False
+    kind = value.get("type")
+    if not isinstance(kind, str) or kind not in _FORMAT_TYPES:
+        return False
+    if "maxItems" in value and not _plain_int(value["maxItems"]):
+        return False
+    if "minItems" in value and not _plain_int(value["minItems"]):
+        return False
+    if "additionalProperties" in value and not isinstance(value["additionalProperties"], bool):
+        return False
+    if "required" in value:
+        required = value["required"]
+        if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
+            return False
+    if "items" in value and not _valid_format_node(value["items"], depth + 1):
+        return False
+    properties = value.get("properties")
+    if properties is not None:
+        if not isinstance(properties, dict) or len(properties) > 8:
+            return False
+        for node in properties.values():
+            if not _valid_format_node(node, depth + 1):
+                return False
+    return True
+
+
+def _valid_ollama_format(value: Any) -> bool:
+    if value == "json":
+        return True
+    if not isinstance(value, dict):
+        return False
+    encoded = json.dumps(value, ensure_ascii=False)
+    if len(encoded) > 4096:
+        return False
+    return _valid_format_node(value, 0)
+
+
 def _ollama_options_and_think(
     *,
     temperature: float,
     extra_options: Mapping[str, Any] | None,
-) -> tuple[dict[str, Any], Any, str | None]:
-    """Keep generation options inside options. Lift think to the chat payload root."""
+) -> tuple[dict[str, Any], Any, Any, Any, str | None]:
+    """Опции генерации остаются в options. think, format и keep_alive поднимаются в корень."""
     options: dict[str, Any] = {"temperature": temperature}
     extra = dict(extra_options or {})
     think = extra.pop("think", _THINK_UNSET)
+    chat_format = extra.pop("format", _THINK_UNSET)
+    keep_alive = extra.pop("keep_alive", _THINK_UNSET)
     for reserved in ("model", "messages", "stream"):
         extra.pop(reserved, None)
     options.update(extra)
     if think is not _THINK_UNSET and not _valid_ollama_think(think):
-        return options, _THINK_UNSET, "invalid think"
-    return options, think, None
+        return options, _THINK_UNSET, _THINK_UNSET, _THINK_UNSET, "invalid think"
+    if chat_format is not _THINK_UNSET and not _valid_ollama_format(chat_format):
+        return options, think, _THINK_UNSET, _THINK_UNSET, "invalid format"
+    if keep_alive is not _THINK_UNSET and not _valid_keep_alive(keep_alive):
+        return options, think, chat_format, _THINK_UNSET, "invalid keep_alive"
+    return options, think, chat_format, keep_alive, None
 
 
 class OllamaTransport:
@@ -208,11 +289,11 @@ class OllamaTransport:
                 )
             cloud_headers["Authorization"] = f"Bearer {api_key}"
 
-        options, think, think_error = _ollama_options_and_think(
+        options, think, chat_format, keep_alive, root_error = _ollama_options_and_think(
             temperature=request.temperature,
             extra_options=request.extra_options,
         )
-        if think_error is not None:
+        if root_error is not None:
             return TransportAttemptResult(
                 candidate=request.candidate,
                 response=None,
@@ -226,9 +307,14 @@ class OllamaTransport:
             "stream": False,
             "options": options,
         }
-        # Ollama /api/chat: think is top-level. False must be sent, not dropped.
+        # Локальный /api/chat. Cloud structured output — другой контракт, format туда не кладём.
+        local_chat = request.candidate.provider_id != "ollama_cloud"
         if think is not _THINK_UNSET:
             payload["think"] = think
+        if local_chat and chat_format is not _THINK_UNSET:
+            payload["format"] = chat_format
+        if local_chat and keep_alive is not _THINK_UNSET:
+            payload["keep_alive"] = keep_alive
 
         req_bytes = json.dumps(payload).encode("utf-8")
         http_req = urllib.request.Request(
@@ -316,7 +402,7 @@ class MistralTransport:
                 {
                     k: v
                     for k, v in request.extra_options.items()
-                    if k not in ("model", "messages", "stream", "think")
+                    if k not in ("model", "messages", "stream", "think", "format", "keep_alive")
                 }
             )
         payload["model"] = request.candidate.model

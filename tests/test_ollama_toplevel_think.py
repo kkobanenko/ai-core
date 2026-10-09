@@ -138,7 +138,71 @@ def test_mistral_does_not_receive_ollama_think() -> None:
         MistralTransport(default_endpoint=endpoint).send_attempt(request)
         body = handler.received[0]["body"]
         assert "think" not in body
+        assert "format" not in body
+        assert "keep_alive" not in body
         assert body["max_tokens"] == 16
         assert body["model"] == "mistral-small-latest"
+    finally:
+        server.shutdown()
+
+
+_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "suggestions": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 1,
+        }
+    },
+    "required": ["suggestions"],
+    "additionalProperties": False,
+}
+
+
+def test_format_and_keep_alive_are_top_level() -> None:
+    server, endpoint, handler = _server()
+    try:
+        OllamaTransport(default_endpoint=endpoint).send_attempt(
+            _request({"think": False, "format": _SCHEMA, "keep_alive": "10m", "num_predict": 32})
+        )
+        body = handler.received[0]["body"]
+        assert body["think"] is False
+        assert body["format"]["properties"]["suggestions"]["maxItems"] == 1
+        assert body["keep_alive"] == "10m"
+        assert "format" not in body["options"]
+        assert "keep_alive" not in body["options"]
+        assert body["options"]["num_predict"] == 32
+    finally:
+        server.shutdown()
+
+
+def test_negative_keep_alive_is_rejected() -> None:
+    server, endpoint, handler = _server()
+    try:
+        result = OllamaTransport(default_endpoint=endpoint).send_attempt(_request({"keep_alive": -1}))
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.kind is AiErrorKind.BAD_REQUEST
+        assert handler.received == []
+    finally:
+        server.shutdown()
+
+
+def test_cloud_does_not_receive_local_format() -> None:
+    server, endpoint, handler = _server()
+    try:
+        request = TransportRequest(
+            candidate=RouteCandidate("ollama_cloud", "gpt-oss:20b-cloud"),
+            messages=({"role": "user", "content": "ping"},),
+            temperature=0.7,
+            timeout_seconds=5.0,
+            extra_options={"format": "json", "keep_alive": "10m", "think": False},
+        )
+        OllamaTransport(default_endpoint=endpoint, authenticated_cloud=False).send_attempt(request)
+        body = handler.received[0]["body"]
+        assert "format" not in body
+        assert "keep_alive" not in body
+        assert body["think"] is False
     finally:
         server.shutdown()
