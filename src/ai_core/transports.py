@@ -116,6 +116,37 @@ class ProviderTransport(Protocol):
         ...
 
 
+_THINK_UNSET = object()
+_OLLAMA_RESERVED_EXTRA = frozenset({"model", "messages", "stream", "think"})
+
+
+def _valid_ollama_think(value: Any) -> bool:
+    """Ollama think is bool, null, or a model-defined string. Numbers are rejected."""
+    if isinstance(value, bool) or value is None:
+        return True
+    if isinstance(value, str):
+        stripped = value.strip()
+        return bool(stripped) and "\n" not in value and "\r" not in value
+    return False
+
+
+def _ollama_options_and_think(
+    *,
+    temperature: float,
+    extra_options: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], Any, str | None]:
+    """Keep generation options inside options. Lift think to the chat payload root."""
+    options: dict[str, Any] = {"temperature": temperature}
+    extra = dict(extra_options or {})
+    think = extra.pop("think", _THINK_UNSET)
+    for reserved in ("model", "messages", "stream"):
+        extra.pop(reserved, None)
+    options.update(extra)
+    if think is not _THINK_UNSET and not _valid_ollama_think(think):
+        return options, _THINK_UNSET, "invalid think"
+    return options, think, None
+
+
 class OllamaTransport:
     """Single-attempt HTTP transport for Ollama-compatible APIs (/api/chat)."""
 
@@ -177,9 +208,17 @@ class OllamaTransport:
                 )
             cloud_headers["Authorization"] = f"Bearer {api_key}"
 
-        options: dict[str, Any] = {"temperature": request.temperature}
-        if request.extra_options:
-            options.update(dict(request.extra_options))
+        options, think, think_error = _ollama_options_and_think(
+            temperature=request.temperature,
+            extra_options=request.extra_options,
+        )
+        if think_error is not None:
+            return TransportAttemptResult(
+                candidate=request.candidate,
+                response=None,
+                error=ErrorDescriptor(AiErrorKind.BAD_REQUEST, None, False, False, True),
+                latency_seconds=time.perf_counter() - start_time,
+            )
 
         payload = {
             "model": request.candidate.model,
@@ -187,6 +226,9 @@ class OllamaTransport:
             "stream": False,
             "options": options,
         }
+        # Ollama /api/chat: think is top-level. False must be sent, not dropped.
+        if think is not _THINK_UNSET:
+            payload["think"] = think
 
         req_bytes = json.dumps(payload).encode("utf-8")
         http_req = urllib.request.Request(
@@ -274,7 +316,7 @@ class MistralTransport:
                 {
                     k: v
                     for k, v in request.extra_options.items()
-                    if k not in ("model", "messages")
+                    if k not in ("model", "messages", "stream", "think")
                 }
             )
         payload["model"] = request.candidate.model
