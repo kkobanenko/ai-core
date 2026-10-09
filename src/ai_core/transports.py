@@ -10,7 +10,9 @@ Architectural invariants:
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import socket
 import time
 import urllib.error
@@ -69,6 +71,8 @@ class TransportRequest:
     # Те же поля, что у планировщика. Дефолт совпадает с ExecutionRequest.
     data_class: DataClass = DataClass.PUBLIC_NO_PII
     outbound_form: OutboundForm = OutboundForm.RAW
+    # Новое поле стоит последним: старые позиционные вызовы не сдвигаются.
+    ollama_chat_fields: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -114,6 +118,136 @@ class ProviderTransport(Protocol):
     ) -> TransportAttemptResult:
         """Execute strictly one attempt against the target provider endpoint."""
         ...
+
+
+_THINK_UNSET = object()
+_OLLAMA_RESERVED_EXTRA = frozenset(
+    {"model", "messages", "stream", "think", "format", "keep_alive"}
+)
+_MAX_KEEP_ALIVE_SECONDS = 1800
+
+
+def _valid_ollama_think(value: Any) -> bool:
+    """Ollama think is bool, null, or a model-defined string. Numbers are rejected."""
+    if isinstance(value, bool) or value is None:
+        return True
+    if isinstance(value, str):
+        stripped = value.strip()
+        return bool(stripped) and "\n" not in value and "\r" not in value
+    return False
+
+
+_DURATION_PART = re.compile(r"^([0-9]+(?:\.[0-9]*)?|\.[0-9]+)(ns|us|µs|μs|ms|s|m|h)")
+_DURATION_SCALE = {
+    "ns": 1e-9,
+    "us": 1e-6,
+    "µs": 1e-6,
+    "μs": 1e-6,
+    "ms": 1e-3,
+    "s": 1.0,
+    "m": 60.0,
+    "h": 3600.0,
+}
+
+
+def _duration_seconds(text: str) -> float | None:
+    """Разбор как у Go time.ParseDuration. Отрицательные значения запрещены."""
+    if text.startswith("+"):
+        text = text[1:]
+    if text.startswith("-") or not text:
+        return None
+    if text == "0":
+        return 0.0
+    rest = text
+    total = 0.0
+    found = False
+    while rest:
+        matched = _DURATION_PART.match(rest)
+        if matched is None:
+            return None
+        total += float(matched.group(1)) * _DURATION_SCALE[matched.group(2)]
+        rest = rest[matched.end() :]
+        found = True
+    if not found:
+        return None
+    return total
+
+
+def _valid_keep_alive(value: Any) -> bool:
+    """Число секунд или длительность Ollama. Потолок 30 минут. -1 запрещён."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+    elif isinstance(value, str):
+        parsed = _duration_seconds(value.strip())
+        if parsed is None:
+            return False
+        seconds = parsed
+    else:
+        return False
+    return 0 <= seconds <= _MAX_KEEP_ALIVE_SECONDS
+
+
+def _json_size_ok(value: Any, depth: int) -> bool:
+    """Любой JSON-serializable документ. Глубина и размер ограничены."""
+    if depth > 32:
+        return False
+    if isinstance(value, float) and math.isnan(value):
+        return False
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return True
+    if isinstance(value, list):
+        return all(_json_size_ok(item, depth + 1) for item in value)
+    if isinstance(value, dict):
+        return all(
+            isinstance(key, str) and _json_size_ok(item, depth + 1) for key, item in value.items()
+        )
+    return False
+
+
+def _valid_ollama_format(value: Any) -> bool:
+    if value == "json":
+        return True
+    if not _json_size_ok(value, 0):
+        return False
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError):
+        return False
+    return len(encoded) <= 65536
+
+
+def _ollama_options_and_think(
+    *,
+    temperature: float,
+    extra_options: Mapping[str, Any] | None,
+    ollama_chat_fields: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], Any, Any, Any, str | None]:
+    """Без opt-in extra_options целиком остаются в options, как до этого PR.
+
+    ollama_chat_fields явно поднимает think, format и keep_alive в корень /api/chat.
+    """
+    options: dict[str, Any] = {"temperature": temperature}
+    extra = dict(extra_options or {})
+    options.update(extra)
+    if ollama_chat_fields is None:
+        return options, _THINK_UNSET, _THINK_UNSET, _THINK_UNSET, None
+    fields = dict(ollama_chat_fields)
+    think = fields.pop("think", _THINK_UNSET)
+    chat_format = fields.pop("format", _THINK_UNSET)
+    keep_alive = fields.pop("keep_alive", _THINK_UNSET)
+    for key in ("think", "format", "keep_alive", "model", "messages", "stream"):
+        options.pop(key, None)
+    if fields:
+        return options, _THINK_UNSET, _THINK_UNSET, _THINK_UNSET, "invalid ollama chat fields"
+    if think is not _THINK_UNSET and not _valid_ollama_think(think):
+        return options, _THINK_UNSET, _THINK_UNSET, _THINK_UNSET, "invalid think"
+    if chat_format is not _THINK_UNSET and not _valid_ollama_format(chat_format):
+        return options, think, _THINK_UNSET, _THINK_UNSET, "invalid format"
+    if keep_alive is not _THINK_UNSET and not _valid_keep_alive(keep_alive):
+        return options, think, chat_format, _THINK_UNSET, "invalid keep_alive"
+    return options, think, chat_format, keep_alive, None
 
 
 class OllamaTransport:
@@ -177,9 +311,18 @@ class OllamaTransport:
                 )
             cloud_headers["Authorization"] = f"Bearer {api_key}"
 
-        options: dict[str, Any] = {"temperature": request.temperature}
-        if request.extra_options:
-            options.update(dict(request.extra_options))
+        options, think, chat_format, keep_alive, root_error = _ollama_options_and_think(
+            temperature=request.temperature,
+            extra_options=request.extra_options,
+            ollama_chat_fields=request.ollama_chat_fields,
+        )
+        if root_error is not None:
+            return TransportAttemptResult(
+                candidate=request.candidate,
+                response=None,
+                error=ErrorDescriptor(AiErrorKind.BAD_REQUEST, None, False, False, True),
+                latency_seconds=time.perf_counter() - start_time,
+            )
 
         payload = {
             "model": request.candidate.model,
@@ -187,6 +330,22 @@ class OllamaTransport:
             "stream": False,
             "options": options,
         }
+        # Cloud не получает локальные format/keep_alive. Явный opt-in — ошибка, не тихий пропуск.
+        if request.candidate.provider_id == "ollama_cloud" and (
+            chat_format is not _THINK_UNSET or keep_alive is not _THINK_UNSET
+        ):
+            return TransportAttemptResult(
+                candidate=request.candidate,
+                response=None,
+                error=ErrorDescriptor(AiErrorKind.BAD_REQUEST, None, False, False, True),
+                latency_seconds=time.perf_counter() - start_time,
+            )
+        if think is not _THINK_UNSET:
+            payload["think"] = think
+        if chat_format is not _THINK_UNSET:
+            payload["format"] = chat_format
+        if keep_alive is not _THINK_UNSET:
+            payload["keep_alive"] = keep_alive
 
         req_bytes = json.dumps(payload).encode("utf-8")
         http_req = urllib.request.Request(
@@ -274,7 +433,7 @@ class MistralTransport:
                 {
                     k: v
                     for k, v in request.extra_options.items()
-                    if k not in ("model", "messages")
+                    if k not in ("model", "messages", "stream", "think", "format", "keep_alive")
                 }
             )
         payload["model"] = request.candidate.model

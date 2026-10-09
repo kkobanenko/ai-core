@@ -46,6 +46,8 @@ class ExecutionRequest:
     temperature: float = 0.7
     extra_options: Mapping[str, Any] = field(default_factory=dict)
     request_egress_authorized: bool = False
+    # Новое поле стоит последним: старые позиционные вызовы не сдвигаются.
+    ollama_chat_fields: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -134,6 +136,7 @@ class SingleLoopRuntime:
                 temperature=request.temperature,
                 timeout_seconds=attempt_timeout,
                 extra_options=request.extra_options,
+                ollama_chat_fields=request.ollama_chat_fields,
                 request_egress_authorized=request.request_egress_authorized,
                 data_class=request.data_class,
                 outbound_form=request.outbound_form,
