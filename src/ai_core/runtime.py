@@ -45,8 +45,9 @@ class ExecutionRequest:
     total_timeout_seconds: float = 30.0
     temperature: float = 0.7
     extra_options: Mapping[str, Any] = field(default_factory=dict)
-    ollama_chat_fields: Mapping[str, Any] | None = None
     request_egress_authorized: bool = False
+    # Новое поле стоит последним: старые позиционные вызовы не сдвигаются.
+    ollama_chat_fields: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)

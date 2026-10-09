@@ -7,8 +7,11 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
+from ai_core.capabilities import ProviderCapability
 from ai_core.errors import AiErrorKind
+from ai_core.privacy import DataClass, OutboundForm
 from ai_core.routing import RouteCandidate
+from ai_core.runtime import ExecutionRequest
 from ai_core.transports import MistralTransport, OllamaTransport, TransportRequest
 
 
@@ -204,6 +207,38 @@ def test_negative_keep_alive_is_rejected() -> None:
         server.shutdown()
 
 
+def test_legacy_positional_calls_keep_egress_and_skip_new_field() -> None:
+    candidate = RouteCandidate("gpu_ollama", "qwen3.6:35b")
+    messages = ({"role": "user", "content": "ping"},)
+    transport = TransportRequest(
+        candidate,
+        messages,
+        0.2,
+        9.0,
+        "http://127.0.0.1:9",
+        "key",
+        {"num_predict": 4},
+        True,
+        DataClass.PUBLIC_NO_PII,
+        OutboundForm.RAW,
+    )
+    assert transport.request_egress_authorized is True
+    assert transport.ollama_chat_fields is None
+    execution = ExecutionRequest(
+        messages,
+        (candidate,),
+        ProviderCapability.TEXT,
+        DataClass.PUBLIC_NO_PII,
+        OutboundForm.RAW,
+        12.0,
+        0.2,
+        {"num_predict": 4},
+        True,
+    )
+    assert execution.request_egress_authorized is True
+    assert execution.ollama_chat_fields is None
+
+
 def test_without_opt_in_legacy_options_are_unchanged() -> None:
     server, endpoint, handler = _server()
     try:
@@ -236,7 +271,7 @@ def test_duration_forms_and_rich_schema_are_accepted() -> None:
         },
     }
     try:
-        for value in ("500ms", "1m30s", "0.5m", "10m", "30m", 0):
+        for value in ("500ms", "1m30s", "0.5m", "10m", "30m", 0, "+1s", "+500ms"):
             handler.received.clear()
             result = OllamaTransport(default_endpoint=endpoint).send_attempt(
                 _request({}, {"keep_alive": value, "format": schema, "think": False})

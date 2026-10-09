@@ -67,12 +67,12 @@ class TransportRequest:
     endpoint: str | None = None
     api_key: str | None = None
     extra_options: Mapping[str, Any] = field(default_factory=dict)
-    # None сохраняет старое поведение: новые поля не поднимаются в корень.
-    ollama_chat_fields: Mapping[str, Any] | None = None
     request_egress_authorized: bool = False
     # Те же поля, что у планировщика. Дефолт совпадает с ExecutionRequest.
     data_class: DataClass = DataClass.PUBLIC_NO_PII
     outbound_form: OutboundForm = OutboundForm.RAW
+    # Новое поле стоит последним: старые позиционные вызовы не сдвигаются.
+    ollama_chat_fields: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +152,8 @@ _DURATION_SCALE = {
 
 def _duration_seconds(text: str) -> float | None:
     """Разбор как у Go time.ParseDuration. Отрицательные значения запрещены."""
+    if text.startswith("+"):
+        text = text[1:]
     if text.startswith("-") or not text:
         return None
     if text == "0":
