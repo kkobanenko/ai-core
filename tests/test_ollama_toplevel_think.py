@@ -13,7 +13,7 @@ from ai_core.transports import MistralTransport, OllamaTransport, TransportReque
 
 
 class _Handler(BaseHTTPRequestHandler):
-    received: list[dict[str, Any]] = []
+    received: list[dict[str, Any]]
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", 0))
