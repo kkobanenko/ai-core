@@ -330,13 +330,21 @@ class OllamaTransport:
             "stream": False,
             "options": options,
         }
-        # Локальный /api/chat. Cloud structured output — другой контракт, format туда не кладём.
-        local_chat = request.candidate.provider_id != "ollama_cloud"
+        # Cloud не получает локальные format/keep_alive. Явный opt-in — ошибка, не тихий пропуск.
+        if request.candidate.provider_id == "ollama_cloud" and (
+            chat_format is not _THINK_UNSET or keep_alive is not _THINK_UNSET
+        ):
+            return TransportAttemptResult(
+                candidate=request.candidate,
+                response=None,
+                error=ErrorDescriptor(AiErrorKind.BAD_REQUEST, None, False, False, True),
+                latency_seconds=time.perf_counter() - start_time,
+            )
         if think is not _THINK_UNSET:
             payload["think"] = think
-        if local_chat and chat_format is not _THINK_UNSET:
+        if chat_format is not _THINK_UNSET:
             payload["format"] = chat_format
-        if local_chat and keep_alive is not _THINK_UNSET:
+        if keep_alive is not _THINK_UNSET:
             payload["keep_alive"] = keep_alive
 
         req_bytes = json.dumps(payload).encode("utf-8")

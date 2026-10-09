@@ -285,7 +285,7 @@ def test_duration_forms_and_rich_schema_are_accepted() -> None:
         server.shutdown()
 
 
-def test_cloud_does_not_receive_local_format() -> None:
+def test_cloud_without_opt_in_keeps_legacy_options() -> None:
     server, endpoint, handler = _server()
     try:
         request = TransportRequest(
@@ -293,13 +293,34 @@ def test_cloud_does_not_receive_local_format() -> None:
             messages=({"role": "user", "content": "ping"},),
             temperature=0.7,
             timeout_seconds=5.0,
-            extra_options={"temperature": 0.2},
-            ollama_chat_fields={"format": "json", "keep_alive": "10m", "think": False},
+            extra_options={"num_predict": 8},
         )
-        OllamaTransport(default_endpoint=endpoint, authenticated_cloud=False).send_attempt(request)
+        result = OllamaTransport(default_endpoint=endpoint).send_attempt(request)
         body = handler.received[0]["body"]
+        assert result.ok is True
         assert "format" not in body
         assert "keep_alive" not in body
-        assert body["think"] is False
+        assert "think" not in body
+        assert body["options"]["num_predict"] == 8
+    finally:
+        server.shutdown()
+
+
+def test_cloud_opt_in_format_or_keep_alive_is_rejected() -> None:
+    server, endpoint, handler = _server()
+    try:
+        request = TransportRequest(
+            candidate=RouteCandidate("ollama_cloud", "gpt-oss:20b-cloud"),
+            messages=({"role": "user", "content": "ping"},),
+            temperature=0.7,
+            timeout_seconds=5.0,
+            ollama_chat_fields={"format": "json", "keep_alive": "10m"},
+        )
+        result = OllamaTransport(default_endpoint=endpoint).send_attempt(request)
+        assert result.ok is False
+        assert result.error is not None
+        assert result.error.kind is AiErrorKind.BAD_REQUEST
+        assert result.error.terminal is True
+        assert handler.received == []
     finally:
         server.shutdown()
