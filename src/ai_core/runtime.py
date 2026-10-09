@@ -45,6 +45,7 @@ class ExecutionRequest:
     total_timeout_seconds: float = 30.0
     temperature: float = 0.7
     extra_options: Mapping[str, Any] = field(default_factory=dict)
+    ollama_chat_fields: Mapping[str, Any] | None = None
     request_egress_authorized: bool = False
 
 
@@ -134,6 +135,7 @@ class SingleLoopRuntime:
                 temperature=request.temperature,
                 timeout_seconds=attempt_timeout,
                 extra_options=request.extra_options,
+                ollama_chat_fields=request.ollama_chat_fields,
                 request_egress_authorized=request.request_egress_authorized,
                 data_class=request.data_class,
                 outbound_form=request.outbound_form,

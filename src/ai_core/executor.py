@@ -110,6 +110,7 @@ def execute_chat(
     runtime: SingleLoopRuntime | None = None,
     transport: ProviderTransport | None = None,
     extra_options: Mapping[str, Any] | None = None,
+    ollama_chat_fields: Mapping[str, Any] | None = None,
 ) -> ExecutionResult:
     """Execute a chat completion request with deterministic planning and single-loop fallback.
 
@@ -181,6 +182,7 @@ def execute_chat(
         total_timeout_seconds=total_timeout_seconds,
         temperature=temperature,
         extra_options=extra_options or {},
+        ollama_chat_fields=ollama_chat_fields,
         request_egress_authorized=effective_egress,
     )
 

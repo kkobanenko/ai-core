@@ -39,13 +39,17 @@ def _server():
     return server, f"http://{host}:{port}", handler
 
 
-def _request(extra: dict[str, Any] | None) -> TransportRequest:
+def _request(
+    extra: dict[str, Any] | None,
+    chat_fields: dict[str, Any] | None = None,
+) -> TransportRequest:
     return TransportRequest(
         candidate=RouteCandidate("gpu_ollama", "qwen3.6:35b"),
         messages=({"role": "user", "content": "ping"},),
         temperature=0.7,
         timeout_seconds=5.0,
         extra_options=extra,
+        ollama_chat_fields=chat_fields,
     )
 
 
@@ -53,7 +57,10 @@ def test_think_false_is_top_level_and_not_inside_options() -> None:
     server, endpoint, handler = _server()
     try:
         result = OllamaTransport(default_endpoint=endpoint).send_attempt(
-            _request({"think": False, "num_predict": 40, "num_ctx": 2048})
+            _request(
+                {"num_predict": 40, "num_ctx": 2048},
+                {"think": False},
+            )
         )
         body = handler.received[0]["body"]
         assert result.ok is True
@@ -71,7 +78,7 @@ def test_think_false_is_top_level_and_not_inside_options() -> None:
 def test_think_true_is_top_level() -> None:
     server, endpoint, handler = _server()
     try:
-        OllamaTransport(default_endpoint=endpoint).send_attempt(_request({"think": True}))
+        OllamaTransport(default_endpoint=endpoint).send_attempt(_request({}, {"think": True}))
         body = handler.received[0]["body"]
         assert body["think"] is True
         assert "think" not in body["options"]
@@ -93,7 +100,9 @@ def test_omitted_think_keeps_previous_payload_shape() -> None:
 def test_invalid_think_is_rejected_without_http() -> None:
     server, endpoint, handler = _server()
     try:
-        result = OllamaTransport(default_endpoint=endpoint).send_attempt(_request({"think": 1}))
+        result = OllamaTransport(default_endpoint=endpoint).send_attempt(
+            _request({}, {"think": 1})
+        )
         assert result.ok is False
         assert result.error is not None
         assert result.error.kind is AiErrorKind.BAD_REQUEST
@@ -112,7 +121,8 @@ def test_extra_options_cannot_replace_model_messages_or_stream() -> None:
                     "messages": [{"role": "user", "content": "injected"}],
                     "stream": True,
                     "think": False,
-                }
+                },
+                {"think": False},
             )
         )
         body = handler.received[0]["body"]
@@ -164,7 +174,10 @@ def test_format_and_keep_alive_are_top_level() -> None:
     server, endpoint, handler = _server()
     try:
         OllamaTransport(default_endpoint=endpoint).send_attempt(
-            _request({"think": False, "format": _SCHEMA, "keep_alive": "10m", "num_predict": 32})
+            _request(
+                {"num_predict": 32},
+                {"think": False, "format": _SCHEMA, "keep_alive": "10m"},
+            )
         )
         body = handler.received[0]["body"]
         assert body["think"] is False
@@ -180,11 +193,59 @@ def test_format_and_keep_alive_are_top_level() -> None:
 def test_negative_keep_alive_is_rejected() -> None:
     server, endpoint, handler = _server()
     try:
-        result = OllamaTransport(default_endpoint=endpoint).send_attempt(_request({"keep_alive": -1}))
+        result = OllamaTransport(default_endpoint=endpoint).send_attempt(
+            _request({}, {"keep_alive": -1})
+        )
         assert result.ok is False
         assert result.error is not None
         assert result.error.kind is AiErrorKind.BAD_REQUEST
         assert handler.received == []
+    finally:
+        server.shutdown()
+
+
+def test_without_opt_in_legacy_options_are_unchanged() -> None:
+    server, endpoint, handler = _server()
+    try:
+        OllamaTransport(default_endpoint=endpoint).send_attempt(
+            _request({"think": False, "num_predict": 8})
+        )
+        body = handler.received[0]["body"]
+        assert "think" not in body
+        assert "format" not in body
+        assert "keep_alive" not in body
+        assert body["options"]["think"] is False
+        assert body["options"]["num_predict"] == 8
+        assert body["options"]["temperature"] == 0.7
+    finally:
+        server.shutdown()
+
+
+def test_duration_forms_and_rich_schema_are_accepted() -> None:
+    server, endpoint, handler = _server()
+    schema = {
+        "title": "Draft",
+        "description": "suggestions only",
+        "type": "object",
+        "$defs": {"line": {"type": ["string", "null"]}},
+        "properties": {
+            "suggestions": {
+                "type": "array",
+                "items": {"anyOf": [{"type": "string"}, {"enum": ["", "ok"]}]},
+            }
+        },
+    }
+    try:
+        for value in ("500ms", "1m30s", "0.5m", "10m", "30m", 0):
+            handler.received.clear()
+            result = OllamaTransport(default_endpoint=endpoint).send_attempt(
+                _request({}, {"keep_alive": value, "format": schema, "think": False})
+            )
+            assert result.ok is True
+            body = handler.received[0]["body"]
+            assert body["keep_alive"] == value
+            assert body["format"]["title"] == "Draft"
+            assert "keep_alive" not in body["options"]
     finally:
         server.shutdown()
 
@@ -197,7 +258,8 @@ def test_cloud_does_not_receive_local_format() -> None:
             messages=({"role": "user", "content": "ping"},),
             temperature=0.7,
             timeout_seconds=5.0,
-            extra_options={"format": "json", "keep_alive": "10m", "think": False},
+            extra_options={"temperature": 0.2},
+            ollama_chat_fields={"format": "json", "keep_alive": "10m", "think": False},
         )
         OllamaTransport(default_endpoint=endpoint, authenticated_cloud=False).send_attempt(request)
         body = handler.received[0]["body"]
