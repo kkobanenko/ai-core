@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import urllib.error
@@ -14,6 +15,13 @@ import urllib.request
 from collections.abc import Callable
 from typing import Protocol
 
+from ai_core.judgment_laya_endpoint import (
+    EndpointAdmissionError,
+    admit_laya_shadow_endpoint,
+    bounded_response_bytes,
+    restore_proxy_env,
+    strip_proxy_env,
+)
 from ai_core.judgment_contracts import (
     BinaryAnswer,
     BinaryQuestion,
@@ -111,15 +119,31 @@ def _questions_to_laya(request: JudgmentRequest) -> list[dict[str, str | None]]:
     return items
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        raise urllib.error.HTTPError(
+            req.full_url,
+            code,
+            "redirects forbidden for Laya shadow",
+            headers,
+            fp,
+        )
+
+
 def _default_http_post(url: str, body: bytes, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
-    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    saved_proxy = strip_proxy_env()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return int(resp.status), resp.read()
-    except urllib.error.HTTPError as err:
-        return int(err.code), err.read()
-    except urllib.error.URLError:
-        raise
+        opener = urllib.request.build_opener(_NoRedirect())
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with opener.open(req, timeout=timeout) as resp:
+                return int(resp.status), bounded_response_bytes(resp.read())
+        except urllib.error.HTTPError as err:
+            return int(err.code), bounded_response_bytes(err.read())
+        except urllib.error.URLError:
+            raise
+    finally:
+        restore_proxy_env(saved_proxy)
 
 
 def invoke_laya_shadow_judgment(
@@ -218,6 +242,16 @@ def invoke_laya_shadow_judgment(
     if remaining <= 0:
         return _error_response(request, JudgmentErrorCategory.DEADLINE_EXHAUSTED, 0)
 
+    try:
+        admitted = admit_laya_shadow_endpoint(
+            laya_shadow_endpoint(),
+            network_boundary=request.network_boundary,
+            request_egress_authorized=request.request_egress_authorized,
+        )
+    except EndpointAdmissionError:
+        return _error_response(request, JudgmentErrorCategory.INVALID_REQUEST, 0)
+
+    endpoint_url = admitted.url
     post = http_post or _default_http_post
     body = json.dumps(
         {
@@ -233,9 +267,11 @@ def invoke_laya_shadow_judgment(
     auth = os.environ.get("AI_CORE_LAYA_SHADOW_BEARER_TOKEN", "").strip()
     if auth:
         headers["Authorization"] = f"Bearer {auth}"
+    elif admitted.host not in ("127.0.0.1", "localhost", "::1"):
+        return _error_response(request, JudgmentErrorCategory.INVALID_REQUEST, 0)
 
     try:
-        status, raw = post(laya_shadow_endpoint(), body, headers, remaining)
+        status, raw = post(endpoint_url, body, headers, remaining)
     except Exception:
         latency_ms = int((clock() - started) * 1000)
         return _error_response(request, JudgmentErrorCategory.TRANSPORT_FAILED, latency_ms)
@@ -249,13 +285,24 @@ def invoke_laya_shadow_judgment(
         answers_raw = parsed.get("answers")
         if not isinstance(answers_raw, list):
             raise ValueError("answers missing")
+        if len(answers_raw) != len(request.questions):
+            raise ValueError("answer count mismatch")
         answer_pairs: list[tuple[str, BinaryAnswer]] = []
-        by_name = {item.get("name"): item for item in answers_raw if isinstance(item, dict)}
+        by_name: dict[str, dict] = {}
+        for item in answers_raw:
+            if not isinstance(item, dict):
+                raise ValueError("invalid answer entry")
+            name = item.get("name")
+            if not isinstance(name, str) or name in by_name:
+                raise ValueError("duplicate or missing answer name")
+            by_name[name] = item
         for name, _question in request.questions:
             entry = by_name.get(name)
             if not isinstance(entry, dict):
                 raise ValueError("missing answer")
             prob = float(entry["probability_true"])
+            if not math.isfinite(prob) or prob < 0.0 or prob > 1.0:
+                raise ValueError("probability out of range")
             answer_pairs.append((name, BinaryAnswer(prob)))
     except Exception:
         return _error_response(request, JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE, latency_ms)
