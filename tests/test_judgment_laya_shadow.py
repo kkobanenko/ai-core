@@ -98,6 +98,82 @@ def test_laya_shadow_success_with_mock_http(monkeypatch: pytest.MonkeyPatch) -> 
     assert response.answers[0][1].probability_true == 0.42
 
 
+@pytest.mark.parametrize("limit", [600, 1500, 3000])
+def test_laya_shadow_passes_explicit_bounded_context_and_diagnostics(
+    monkeypatch: pytest.MonkeyPatch, limit: int
+) -> None:
+    monkeypatch.setenv("AI_CORE_LAYA_J2_SHADOW_ADAPTER_ENABLED", "1")
+    text = "x" * limit
+    diagnostics: dict[str, object] = {}
+
+    def fake_post(_url: str, body: bytes, _headers: dict[str, str], _timeout: float) -> tuple[int, bytes]:
+        payload = json.loads(body.decode("utf-8"))
+        assert payload["text"] == text
+        assert payload["input_char_limit"] == limit
+        return 200, json.dumps(
+            {
+                "answers": [{"name": "q1", "probability_true": 0.42}],
+                "latency_ms": 1,
+                "input_character_count": len(text),
+                "input_token_count": 321,
+                "effective_max_len": 2048,
+                "truncated": False,
+                "truncation_reason": None,
+            }
+        ).encode("utf-8")
+
+    response = invoke_laya_shadow_judgment(
+        _binary_request(payload={"text": text, "experimental_input_char_limit": limit}),
+        decision_pack_known=lambda _a, _b: True,
+        clock=lambda: 1.0,
+        http_post=fake_post,
+        diagnostics_sink=diagnostics,
+    )
+    assert response.error is None
+    assert diagnostics == {
+        "input_character_count": len(text),
+        "input_token_count": 321,
+        "effective_max_len": 2048,
+        "truncated": False,
+        "truncation_reason": None,
+    }
+
+
+def test_laya_shadow_rejects_unsupported_context_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_CORE_LAYA_J2_SHADOW_ADAPTER_ENABLED", "1")
+    response = invoke_laya_shadow_judgment(
+        _binary_request(payload={"text": "sample", "experimental_input_char_limit": 2048}),
+        decision_pack_known=lambda _a, _b: True,
+        clock=lambda: 1.0,
+        http_post=lambda *_args: pytest.fail("HTTP must not be called"),
+    )
+    assert response.error is JudgmentErrorCategory.INVALID_REQUEST
+
+
+def test_laya_shadow_rejects_silent_server_truncation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_CORE_LAYA_J2_SHADOW_ADAPTER_ENABLED", "1")
+
+    def fake_post(*_args: object) -> tuple[int, bytes]:
+        return 200, json.dumps(
+            {
+                "answers": [{"name": "q1", "probability_true": 0.42}],
+                "input_character_count": 1500,
+                "input_token_count": 2048,
+                "effective_max_len": 2048,
+                "truncated": True,
+                "truncation_reason": "tokenizer_limit",
+            }
+        ).encode("utf-8")
+
+    response = invoke_laya_shadow_judgment(
+        _binary_request(payload={"text": "x" * 1500, "experimental_input_char_limit": 1500}),
+        decision_pack_known=lambda _a, _b: True,
+        clock=lambda: 1.0,
+        http_post=fake_post,
+    )
+    assert response.error is JudgmentErrorCategory.INVALID_PROVIDER_RESPONSE
+
+
 def test_import_ai_core_does_not_load_laya() -> None:
     import sys
 

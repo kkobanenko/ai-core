@@ -43,6 +43,7 @@ LAYA_SHADOW_MODEL_VERSION = "convaiinnovations-laya-multilingual-main"
 _ENV_ENABLE = "AI_CORE_LAYA_J2_SHADOW_ADAPTER_ENABLED"
 _ENV_ENDPOINT = "AI_CORE_LAYA_SHADOW_ENDPOINT"
 _DEFAULT_ENDPOINT = "http://127.0.0.1:8080/v1/judge"
+_ALLOWED_INPUT_CHAR_LIMITS = frozenset({600, 1500, 3000})
 
 
 class HttpPostFn(Protocol):
@@ -94,13 +95,19 @@ def _error_response(
     )
 
 
-def _extract_text(payload: object) -> str | None:
+def _extract_text(payload: object) -> tuple[str, int] | None:
     if not isinstance(payload, dict):
         return None
     text = payload.get("text")
     if type(text) is not str or not text.strip():
         return None
-    return text.strip()[:600]
+    limit = payload.get("experimental_input_char_limit", 600)
+    if type(limit) is not int or limit not in _ALLOWED_INPUT_CHAR_LIMITS:
+        return None
+    normalized = text.strip()
+    if len(normalized) > limit:
+        return None
+    return normalized, limit
 
 
 def _questions_to_laya(request: JudgmentRequest) -> list[dict[str, str | None]]:
@@ -152,6 +159,7 @@ def invoke_laya_shadow_judgment(
     clock: Callable[[], float] = time.monotonic,
     decision_pack_known: Callable[[str, str], bool] | None = None,
     http_post: HttpPostFn | None = None,
+    diagnostics_sink: dict[str, object] | None = None,
 ) -> JudgmentResponse:
     """Shadow-only Laya inference через HTTP. Не заменяет invoke_judgment."""
     started = clock()
@@ -226,9 +234,10 @@ def invoke_laya_shadow_judgment(
     ):
         return _error_response(request, JudgmentErrorCategory.INVALID_REQUEST, 0)
 
-    text = _extract_text(request.payload)
-    if text is None:
+    extracted = _extract_text(request.payload)
+    if extracted is None:
         return _error_response(request, JudgmentErrorCategory.INVALID_REQUEST, 0)
+    text, input_char_limit = extracted
 
     for _name, question in request.questions:
         if not isinstance(question, BinaryQuestion):
@@ -259,6 +268,7 @@ def invoke_laya_shadow_judgment(
             "model": request.model,
             "model_version": request.model_version,
             "text": text,
+            "input_char_limit": input_char_limit,
             "questions": laya_questions,
         },
         ensure_ascii=True,
@@ -282,6 +292,27 @@ def invoke_laya_shadow_judgment(
 
     try:
         parsed = json.loads(raw.decode("utf-8"))
+        diagnostic_keys = (
+            "input_character_count",
+            "input_token_count",
+            "effective_max_len",
+            "truncated",
+            "truncation_reason",
+        )
+        has_diagnostics = any(key in parsed for key in diagnostic_keys)
+        if input_char_limit > 600 and not all(key in parsed for key in diagnostic_keys):
+            raise ValueError("long-context diagnostics missing")
+        if has_diagnostics:
+            if parsed.get("input_character_count") != len(text):
+                raise ValueError("input character count mismatch")
+            if parsed.get("truncated") is not False:
+                raise ValueError("server truncated input")
+            if not isinstance(parsed.get("input_token_count"), int):
+                raise ValueError("input token count missing")
+            if not isinstance(parsed.get("effective_max_len"), int):
+                raise ValueError("effective max_len missing")
+            if diagnostics_sink is not None:
+                diagnostics_sink.update({key: parsed.get(key) for key in diagnostic_keys})
         answers_raw = parsed.get("answers")
         if not isinstance(answers_raw, list):
             raise ValueError("answers missing")
